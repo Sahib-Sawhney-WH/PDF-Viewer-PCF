@@ -1,0 +1,63 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# Dependencies
+node_modules/
+
+# Generated directory
+**/generated
+
+# Output directory
+/out
+
+# MSBuild output directories
+bin/
+obj/
+
+# MSBuild Binary and Structured Log
+*.binlog
+
+# Visual Studio
+/.vs
+*.suo
+*.user
+*.sln.docstates
+*.pcfproj.user
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test coverage
+coverage/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Note: Solution zip files in Solutions/*/bin/ are tracked for easy distribution
+# Uncomment below to exclude them:
+# Solutions/*/bin/
+
+# Claude Code internal notes (not for public repo)
+CLAUDE.md
+.claude/
+
+# Invalid Windows files
+nul
+temp_check/

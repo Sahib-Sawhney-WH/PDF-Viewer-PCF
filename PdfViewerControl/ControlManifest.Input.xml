@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<manifest>
+  <control namespace="RSM" constructor="PdfViewerControl" version="1.1.1" display-name-key="PDF Viewer" description-key="View PDF and image files from Dataverse file columns" control-type="standard">
+    <external-service-usage enabled="false">
+    </external-service-usage>
+
+    <!-- PRIMARY BOUND PROPERTY - Bind to any multiline text field -->
+    <property name="boundField"
+              display-name-key="Bound Field"
+              description-key="Bind to any text field. The control auto-discovers file columns on the record."
+              of-type="Multiple"
+              usage="bound"
+              required="true" />
+
+    <!-- CONFIGURATION PROPERTIES -->
+
+    <!-- Default file column - logical name of the file column to display by default -->
+    <property name="defaultFileColumn"
+              display-name-key="Default File Column"
+              description-key="Logical name of the file column to display by default (e.g., rsm_contractfile). Leave empty to auto-select."
+              of-type="SingleLine.Text"
+              usage="input" />
+
+    <!-- Rows - controls height like markdown editor -->
+    <property name="rows"
+              display-name-key="Rows"
+              description-key="Number of rows to display (controls height, default: 10)"
+              of-type="Whole.None"
+              usage="input" />
+
+    <!-- UI Options -->
+    <property name="showToolbar"
+              display-name-key="Show Toolbar"
+              description-key="Show the toolbar with zoom, navigation, and other controls"
+              of-type="TwoOptions"
+              usage="input"
+              default-value="true" />
+
+    <property name="showSidebar"
+              display-name-key="Show Sidebar"
+              description-key="Show the sidebar with thumbnails and document outline"
+              of-type="TwoOptions"
+              usage="input"
+              default-value="true" />
+
+    <property name="defaultZoom"
+              display-name-key="Default Zoom"
+              description-key="Initial zoom level: auto, page-fit, page-width, or percentage (e.g., 100)"
+              of-type="SingleLine.Text"
+              usage="input" />
+
+    <property name="theme"
+              display-name-key="Theme"
+              description-key="Color theme: light, dark, or auto (follows system)"
+              of-type="SingleLine.Text"
+              usage="input" />
+
+    <!-- OUTPUT PROPERTIES -->
+    <property name="currentPage"
+              display-name-key="Current Page"
+              description-key="The currently visible page number"
+              of-type="Whole.None"
+              usage="output" />
+
+    <property name="totalPages"
+              display-name-key="Total Pages"
+              description-key="Total number of pages in the document"
+              of-type="Whole.None"
+              usage="output" />
+
+    <property name="selectedColumn"
+              display-name-key="Selected Column"
+              description-key="The currently selected file column"
+              of-type="SingleLine.Text"
+              usage="output" />
+
+    <resources>
+      <code path="index.ts" order="1"/>
+      <css path="css/PdfViewer.css" order="1" />
+    </resources>
+  </control>
+</manifest>
