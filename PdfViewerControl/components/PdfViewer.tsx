@@ -83,6 +83,9 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
     const searchInputRef = useRef<HTMLInputElement>(null);
     const searchDebounceRef = useRef<NodeJS.Timeout | null>(null);
 
+    // Page input state (separate from currentPage to prevent glitches while typing)
+    const [pageInputValue, setPageInputValue] = useState('');
+
     // Rendered pages tracking
     const [pageViewports, setPageViewports] = useState<PageViewport[]>([]);
     const [renderedPages, setRenderedPages] = useState<Map<number, 'rendering' | 'done'>>(new Map());
@@ -159,6 +162,11 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
     useEffect(() => {
         onPageChange?.(currentPage, totalPages);
     }, [currentPage, totalPages, onPageChange]);
+
+    // Sync page input value when currentPage changes (from scroll, thumbnail click, etc.)
+    useEffect(() => {
+        setPageInputValue(currentPage.toString());
+    }, [currentPage]);
 
     // Load document from selected column
     const loadDocument = useCallback(async (columnName: string) => {
@@ -446,6 +454,39 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
 
     const previousPage = () => goToPage(currentPage - 1);
     const nextPage = () => goToPage(currentPage + 1);
+
+    // Handle page input change - only allow valid numbers up to totalPages digit length
+    const handlePageInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const value = e.target.value;
+        // Only allow digits, limit to reasonable length (max digits in totalPages + 1)
+        const maxDigits = Math.max(totalPages.toString().length + 1, 4);
+        if (value === '' || (/^\d+$/.test(value) && value.length <= maxDigits)) {
+            setPageInputValue(value);
+        }
+    };
+
+    // Handle page input blur - navigate to the entered page
+    const handlePageInputBlur = () => {
+        const page = parseInt(pageInputValue, 10);
+        if (!isNaN(page) && page >= 1 && page <= totalPages) {
+            goToPage(page);
+        } else {
+            // Reset to current page if invalid
+            setPageInputValue(currentPage.toString());
+        }
+    };
+
+    // Handle page input key press - navigate on Enter
+    const handlePageInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            (e.target as HTMLInputElement).blur();
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            setPageInputValue(currentPage.toString());
+            (e.target as HTMLInputElement).blur();
+        }
+    };
 
     // Rotation handlers
     const rotateLeft = () => {
@@ -960,12 +1001,14 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
                                 ◀
                             </button>
                             <input
-                                type="number"
+                                type="text"
+                                inputMode="numeric"
                                 className="pdf-input page-input"
-                                value={currentPage}
-                                min={1}
-                                max={totalPages}
-                                onChange={(e) => goToPage(parseInt(e.target.value, 10))}
+                                value={pageInputValue}
+                                onChange={handlePageInputChange}
+                                onBlur={handlePageInputBlur}
+                                onKeyDown={handlePageInputKeyDown}
+                                onFocus={(e) => e.target.select()}
                             />
                             <span>of {totalPages}</span>
                             <button

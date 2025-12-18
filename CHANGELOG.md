@@ -2,6 +2,15 @@
 
 All notable changes to the RSM PDF Viewer PCF Control will be documented in this file.
 
+## [1.1.2] - 2025-12-18
+
+### Fixed
+
+- Page input no longer glitches when typing - uses local state until blur/Enter
+- Page input now limits digit length to prevent excessively long numbers
+- Input selects all text on focus for easy replacement
+- Escape key cancels page input and resets to current page
+
 ## [1.1.1] - 2025-12-17
 
 ### Fixed
