@@ -172,6 +172,7 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
 
         return () => {
             pdfServiceRef.current.destroy();
+            dataverseServiceRef.current.abort();
         };
     }, [defaultFileColumn]);
 
@@ -1315,50 +1316,86 @@ const ThumbnailPanel: React.FC<ThumbnailPanelProps> = React.memo(({ pdfService, 
     const [thumbnails, setThumbnails] = useState<Map<number, string>>(new Map());
     const thumbnailTasksRef = useRef<Map<number, RenderTask>>(new Map());
     const mountedRef = useRef(true);
+    const idleCallbackRef = useRef<number | null>(null);
+
+    // Helper to schedule work during idle time (with fallback for older browsers)
+    const scheduleIdleWork = useCallback((callback: () => void): number => {
+        if (typeof window.requestIdleCallback === 'function') {
+            return window.requestIdleCallback(callback, { timeout: 2000 });
+        }
+        // Fallback for browsers without requestIdleCallback (Safari, older browsers)
+        return setTimeout(callback, CONFIG.THUMBNAIL_BATCH_DELAY_MS) as unknown as number;
+    }, []);
+
+    const cancelIdleWork = useCallback((id: number) => {
+        if (typeof window.cancelIdleCallback === 'function') {
+            window.cancelIdleCallback(id);
+        } else {
+            clearTimeout(id);
+        }
+    }, []);
 
     useEffect(() => {
         mountedRef.current = true;
 
+        const renderSingleThumbnail = async (pageNum: number): Promise<boolean> => {
+            if (!mountedRef.current || thumbnails.has(pageNum)) return false;
+            try {
+                const canvas = document.createElement('canvas');
+                const renderTask = await pdfService.renderPage(pageNum, canvas, CONFIG.THUMBNAIL_SCALE, 0);
+                thumbnailTasksRef.current.set(pageNum, renderTask);
+                await renderTask.promise;
+                thumbnailTasksRef.current.delete(pageNum);
+                if (mountedRef.current) {
+                    setThumbnails(prev => new Map(prev).set(pageNum, canvas.toDataURL()));
+                }
+                return true;
+            } catch {
+                return false;
+            }
+        };
+
         const renderThumbnails = async () => {
-            // Render visible thumbnails first (around current page)
+            // Render visible thumbnails first (around current page) - high priority
             const start = Math.max(1, currentPage - CONFIG.THUMBNAIL_PREFETCH_BEFORE);
             const end = Math.min(totalPages, currentPage + CONFIG.THUMBNAIL_PREFETCH_AFTER);
 
-            // First batch: pages near current view
+            // First batch: pages near current view (immediate)
             for (let i = start; i <= end && mountedRef.current; i++) {
-                if (thumbnails.has(i)) continue;
-                try {
-                    const canvas = document.createElement('canvas');
-                    const renderTask = await pdfService.renderPage(i, canvas, CONFIG.THUMBNAIL_SCALE, 0);
-                    thumbnailTasksRef.current.set(i, renderTask);
-                    await renderTask.promise;
-                    thumbnailTasksRef.current.delete(i);
-                    if (mountedRef.current) {
-                        setThumbnails(prev => new Map(prev).set(i, canvas.toDataURL()));
-                    }
-                } catch {
-                    // Skip failed thumbnails
+                await renderSingleThumbnail(i);
+            }
+
+            // Second batch: remaining pages using requestIdleCallback for non-blocking rendering
+            const remainingPages: number[] = [];
+            for (let i = 1; i <= Math.min(totalPages, CONFIG.THUMBNAIL_MAX_PAGES); i++) {
+                if (!thumbnails.has(i) && (i < start || i > end)) {
+                    remainingPages.push(i);
                 }
             }
 
-            // Second batch: remaining pages (deferred, slower)
+            // Process remaining thumbnails during browser idle time
+            const processNextThumbnail = (index: number) => {
+                if (!mountedRef.current || index >= remainingPages.length) return;
+
+                idleCallbackRef.current = scheduleIdleWork(() => {
+                    renderSingleThumbnail(remainingPages[index]).then(() => {
+                        if (mountedRef.current) {
+                            processNextThumbnail(index + 1);
+                        }
+                        return;
+                    }).catch(() => {
+                        // Continue with next thumbnail on error
+                        if (mountedRef.current) {
+                            processNextThumbnail(index + 1);
+                        }
+                    });
+                });
+            };
+
+            // Start idle processing after a delay
             await new Promise(resolve => setTimeout(resolve, CONFIG.THUMBNAIL_DEFERRED_DELAY_MS));
-            for (let i = 1; i <= Math.min(totalPages, CONFIG.THUMBNAIL_MAX_PAGES) && mountedRef.current; i++) {
-                if (thumbnails.has(i)) continue;
-                try {
-                    const canvas = document.createElement('canvas');
-                    const renderTask = await pdfService.renderPage(i, canvas, CONFIG.THUMBNAIL_SCALE, 0);
-                    thumbnailTasksRef.current.set(i, renderTask);
-                    await renderTask.promise;
-                    thumbnailTasksRef.current.delete(i);
-                    if (mountedRef.current) {
-                        setThumbnails(prev => new Map(prev).set(i, canvas.toDataURL()));
-                    }
-                    // Small delay between thumbnails to not block main thread
-                    await new Promise(resolve => setTimeout(resolve, CONFIG.THUMBNAIL_BATCH_DELAY_MS));
-                } catch {
-                    // Skip failed thumbnails
-                }
+            if (mountedRef.current && remainingPages.length > 0) {
+                processNextThumbnail(0);
             }
         };
 
@@ -1368,6 +1405,9 @@ const ThumbnailPanel: React.FC<ThumbnailPanelProps> = React.memo(({ pdfService, 
             return () => {
                 clearTimeout(timer);
                 mountedRef.current = false;
+                if (idleCallbackRef.current !== null) {
+                    cancelIdleWork(idleCallbackRef.current);
+                }
                 thumbnailTasksRef.current.forEach((task) => task.cancel());
                 thumbnailTasksRef.current.clear();
             };
@@ -1375,10 +1415,13 @@ const ThumbnailPanel: React.FC<ThumbnailPanelProps> = React.memo(({ pdfService, 
 
         return () => {
             mountedRef.current = false;
+            if (idleCallbackRef.current !== null) {
+                cancelIdleWork(idleCallbackRef.current);
+            }
             thumbnailTasksRef.current.forEach((task) => task.cancel());
             thumbnailTasksRef.current.clear();
         };
-    }, [pdfService, totalPages, currentPage]);
+    }, [pdfService, totalPages, currentPage, scheduleIdleWork, cancelIdleWork]);
 
     return (
         <div className="pdf-thumbnail-container">
@@ -1470,8 +1513,14 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
     const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
     // Track active render tasks for cancellation
     const renderTasksRef = useRef<Map<number, RenderTask>>(new Map());
+    // Track render task start times for timeout cleanup
+    const renderTaskStartTimesRef = useRef<Map<number, number>>(new Map());
     // Track pages currently being rendered (ref to avoid stale closure issues)
     const renderingPagesRef = useRef<Set<number>>(new Set());
+    // IntersectionObserver for efficient visibility detection
+    const observerRef = useRef<IntersectionObserver | null>(null);
+    // Track visible pages and their intersection ratios for current page detection
+    const visiblePagesRef = useRef<Map<number, number>>(new Map());
 
     // Render a single page - separated to avoid race conditions
     const renderPage = useCallback(async (pageNum: number, canvas: HTMLCanvasElement) => {
@@ -1498,15 +1547,17 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
             }
 
-            // Start new render and store the task
+            // Start new render and store the task with start time
             const renderTask = await pdfService.renderPage(pageNum, canvas, scale, rotation);
             renderTasksRef.current.set(pageNum, renderTask);
+            renderTaskStartTimesRef.current.set(pageNum, Date.now());
 
             // Wait for render to complete
             await renderTask.promise;
 
-            // Clean up completed task
+            // Clean up completed task and start time
             renderTasksRef.current.delete(pageNum);
+            renderTaskStartTimesRef.current.delete(pageNum);
 
             // Get text content
             const text = await pdfService.getTextContent(pageNum);
@@ -1527,39 +1578,43 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
                 return next;
             });
         } finally {
-            // Always remove from rendering set when done
+            // Always remove from rendering set and start time when done
             renderingPagesRef.current.delete(pageNum);
+            renderTaskStartTimesRef.current.delete(pageNum);
         }
     }, [pdfService, scale, rotation, setRenderedPages, setTextContent]);
 
-    // Render visible pages
-    const renderVisiblePages = useCallback(() => {
-        if (!containerRef.current) return;
+    // Handle page visibility changes from IntersectionObserver
+    const handlePageVisible = useCallback((pageNum: number, isIntersecting: boolean, ratio: number) => {
+        if (isIntersecting) {
+            visiblePagesRef.current.set(pageNum, ratio);
 
-        const container = containerRef.current;
-        const scrollTop = container.scrollTop;
-        const viewportTop = scrollTop - CONFIG.RENDER_BUFFER_PX;
-        const viewportBottom = scrollTop + container.clientHeight + CONFIG.RENDER_BUFFER_PX;
-
-        for (let i = 1; i <= pageViewports.length; i++) {
-            const pageRef = pageRefs.current.get(i);
-            if (!pageRef) continue;
-
-            const top = pageRef.offsetTop;
-            const bottom = top + pageRef.offsetHeight;
-
-            if (bottom >= viewportTop && top <= viewportBottom) {
-                // Check both state and ref to avoid duplicate renders
-                if (!renderedPages.has(i) && !renderingPagesRef.current.has(i)) {
-                    const canvas = pageRef.querySelector('canvas');
-                    if (canvas) {
-                        // Fire and forget - renderPage handles its own state
-                        renderPage(i, canvas);
-                    }
+            // Trigger render if not already rendered or rendering
+            if (!renderedPages.has(pageNum) && !renderingPagesRef.current.has(pageNum)) {
+                const pageRef = pageRefs.current.get(pageNum);
+                const canvas = pageRef?.querySelector('canvas');
+                if (canvas) {
+                    renderPage(pageNum, canvas as HTMLCanvasElement);
                 }
             }
+        } else {
+            visiblePagesRef.current.delete(pageNum);
         }
-    }, [pageViewports, renderedPages, renderPage]);
+
+        // Update current page based on most visible page
+        let mostVisible = 1;
+        let maxRatio = 0;
+        visiblePagesRef.current.forEach((pageRatio, num) => {
+            if (pageRatio > maxRatio) {
+                maxRatio = pageRatio;
+                mostVisible = num;
+            }
+        });
+
+        if (visiblePagesRef.current.size > 0 && mostVisible !== currentPage) {
+            onPageChange(mostVisible);
+        }
+    }, [renderedPages, renderPage, currentPage, onPageChange]);
 
     // Cancel all render tasks when scale/rotation changes or on unmount
     useEffect(() => {
@@ -1569,9 +1624,31 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
                 task.cancel();
             });
             renderTasksRef.current.clear();
+            renderTaskStartTimesRef.current.clear();
             renderingPagesRef.current.clear();
+            visiblePagesRef.current.clear();
         };
     }, [scale, rotation]);
+
+    // Periodic cleanup of stale render tasks (tasks running longer than timeout)
+    useEffect(() => {
+        const cleanupInterval = setInterval(() => {
+            const now = Date.now();
+            renderTaskStartTimesRef.current.forEach((startTime, pageNum) => {
+                if (now - startTime > CONFIG.RENDER_TASK_TIMEOUT_MS) {
+                    const task = renderTasksRef.current.get(pageNum);
+                    if (task) {
+                        task.cancel();
+                        renderTasksRef.current.delete(pageNum);
+                    }
+                    renderTaskStartTimesRef.current.delete(pageNum);
+                    renderingPagesRef.current.delete(pageNum);
+                }
+            });
+        }, CONFIG.RENDER_TASK_TIMEOUT_MS / 2); // Check every half the timeout period
+
+        return () => clearInterval(cleanupInterval);
+    }, []);
 
     // Scroll to top when document loads (pageViewports changes)
     useEffect(() => {
@@ -1580,66 +1657,42 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
         }
     }, [pageViewports.length]);
 
-    // Initial render and scroll handler with throttling
+    // Set up IntersectionObserver for efficient visibility detection
     useEffect(() => {
-        renderVisiblePages();
+        if (!containerRef.current || pageViewports.length === 0) return;
 
-        let scrollThrottleTimer: NodeJS.Timeout | null = null;
-        let lastScrollTime = 0;
+        // Clean up previous observer
+        if (observerRef.current) {
+            observerRef.current.disconnect();
+        }
 
-        const handleScroll = () => {
-            const now = Date.now();
-
-            // Throttle render calls to prevent excessive rendering during fast scroll
-            if (now - lastScrollTime < CONFIG.SCROLL_THROTTLE_MS) {
-                // Schedule a render after throttle period if not already scheduled
-                if (!scrollThrottleTimer) {
-                    scrollThrottleTimer = setTimeout(() => {
-                        scrollThrottleTimer = null;
-                        renderVisiblePages();
-                    }, CONFIG.SCROLL_THROTTLE_MS);
-                }
-            } else {
-                lastScrollTime = now;
-                renderVisiblePages();
+        // Create observer with buffer margin for pre-loading
+        observerRef.current = new IntersectionObserver(
+            (entries) => {
+                entries.forEach((entry) => {
+                    const pageNum = parseInt(entry.target.getAttribute('data-page') || '0', 10);
+                    if (pageNum > 0) {
+                        handlePageVisible(pageNum, entry.isIntersecting, entry.intersectionRatio);
+                    }
+                });
+            },
+            {
+                root: containerRef.current,
+                rootMargin: `${CONFIG.RENDER_BUFFER_PX}px 0px ${CONFIG.RENDER_BUFFER_PX}px 0px`,
+                threshold: [0, 0.1, 0.25, 0.5, 0.75, 1.0] // Multiple thresholds for accurate current page detection
             }
+        );
 
-            // Update current page based on scroll position (not throttled for UI responsiveness)
-            if (!containerRef.current) return;
-            const container = containerRef.current;
-            const scrollTop = container.scrollTop;
-            const containerHeight = container.clientHeight;
+        // Observe all page elements
+        pageRefs.current.forEach((pageRef) => {
+            observerRef.current?.observe(pageRef);
+        });
 
-            let mostVisible = 1;
-            let maxVisible = 0;
-
-            pageRefs.current.forEach((pageRef, pageNum) => {
-                const top = pageRef.offsetTop;
-                const bottom = top + pageRef.offsetHeight;
-                const visibleTop = Math.max(scrollTop, top);
-                const visibleBottom = Math.min(scrollTop + containerHeight, bottom);
-                const visible = Math.max(0, visibleBottom - visibleTop);
-
-                if (visible > maxVisible) {
-                    maxVisible = visible;
-                    mostVisible = pageNum;
-                }
-            });
-
-            if (mostVisible !== currentPage) {
-                onPageChange(mostVisible);
-            }
-        };
-
-        const container = containerRef.current;
-        container?.addEventListener('scroll', handleScroll);
         return () => {
-            container?.removeEventListener('scroll', handleScroll);
-            if (scrollThrottleTimer) {
-                clearTimeout(scrollThrottleTimer);
-            }
+            observerRef.current?.disconnect();
+            visiblePagesRef.current.clear();
         };
-    }, [renderVisiblePages, currentPage, onPageChange]);
+    }, [pageViewports.length, handlePageVisible]);
 
     // Get matches for a specific page
     const getPageMatches = useCallback((pageNum: number) => {

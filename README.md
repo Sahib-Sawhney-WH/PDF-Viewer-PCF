@@ -58,8 +58,8 @@ A feature-rich PDF and image viewer control for Power Apps Model-Driven Apps. Vi
 | `showToolbar` | Boolean | true | Show/hide the toolbar |
 | `showSidebar` | Boolean | true | Show/hide the sidebar |
 | `defaultZoom` | Text | auto | Initial zoom: `auto`, `page-fit`, `page-width`, or percentage |
-| `theme` | Text | auto | Theme: `light`, `dark`, or `auto` |
-| `rowHeight` | Number | - | Fixed height in pixels (e.g., 600). Leave empty to use available space |
+| `theme` | Text | light | Theme: `light`, `dark`, or `auto` |
+| `rows` | Number | 10 | Number of rows to display (controls height) |
 
 ## Output Properties
 
@@ -74,17 +74,17 @@ A feature-rich PDF and image viewer control for Power Apps Model-Driven Apps. Vi
 | Shortcut | Action |
 |----------|--------|
 | `Ctrl+F` | Open find panel |
-| `Enter` | Next search match |
-| `Shift+Enter` | Previous search match |
+| `Ctrl+P` | Print document |
+| `Ctrl+G` | Next search match |
+| `Ctrl+Shift+G` | Previous search match |
+| `Enter` | Next search match (in find panel) |
+| `Shift+Enter` | Previous search match (in find panel) |
 | `Escape` | Close find panel / dialogs |
 | `←` / `→` | Previous / Next page |
+| `Page Up` / `Page Down` | Previous / Next page |
 | `Home` / `End` | First / Last page |
-| `+` / `-` | Zoom in / out |
-| `R` | Rotate right |
-| `F` | Toggle fullscreen |
-| `B` | Toggle sidebar |
-| `D` | Toggle dark mode |
-| `?` | Show shortcuts help |
+
+*Note: Keyboard shortcuts only work when the PDF viewer has focus.*
 
 ## Supported File Types
 

@@ -2,6 +2,38 @@
 
 All notable changes to the RSM PDF Viewer PCF Control will be documented in this file.
 
+## [1.2.2] - 2025-12-18
+
+### Performance Improvements
+
+- **IntersectionObserver for page visibility** - Replaced manual scroll position calculations with native browser API
+  - Eliminates 60+ DOM queries per scroll event
+  - More accurate current page detection using intersection ratios
+  - Automatic pre-loading via rootMargin buffer
+- **requestIdleCallback for thumbnail rendering** - Non-blocking thumbnail generation
+  - Thumbnails near current page render immediately (high priority)
+  - Remaining thumbnails render during browser idle time
+  - Falls back to setTimeout for Safari and older browsers
+  - Proper cleanup of idle callbacks on unmount
+
+### Technical Details
+
+- Multiple intersection thresholds (0, 0.1, 0.25, 0.5, 0.75, 1.0) for smooth current page tracking
+- Thumbnail rendering split into priority batches for better perceived performance
+
+## [1.2.1] - 2025-12-18
+
+### Performance Improvements
+
+- Added AbortController to all DataverseService fetch calls for proper request cancellation on unmount
+- Added render task timeout cleanup - stale tasks auto-cancel after 10 seconds
+- Periodic cleanup interval checks for stuck render tasks every 5 seconds
+
+### Bug Fixes
+
+- Fixed potential memory leak: Dataverse fetch requests now properly abort on component unmount
+- Fixed potential stuck render tasks that could accumulate during rapid scrolling
+
 ## [1.2.0] - 2025-12-18
 
 ### Performance Improvements

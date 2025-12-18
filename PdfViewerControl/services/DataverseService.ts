@@ -40,6 +40,7 @@ declare global {
 export class DataverseService {
     private config: ViewerConfig;
     private context: ComponentFramework.Context<unknown> | null = null;
+    private abortController: AbortController | null = null;
 
     constructor() {
         this.config = {
@@ -52,6 +53,24 @@ export class DataverseService {
             baseUrl: window.location.origin,
             isDataverseContext: false
         };
+        this.abortController = new AbortController();
+    }
+
+    /**
+     * Abort all pending fetch requests (call on component unmount)
+     */
+    abort(): void {
+        if (this.abortController) {
+            this.abortController.abort();
+            this.abortController = new AbortController();
+        }
+    }
+
+    /**
+     * Get the current abort signal for fetch requests
+     */
+    private getSignal(): AbortSignal | undefined {
+        return this.abortController?.signal;
     }
 
     /**
@@ -180,7 +199,8 @@ export class DataverseService {
                         'Accept': 'application/json',
                         'OData-MaxVersion': '4.0',
                         'OData-Version': '4.0'
-                    }
+                    },
+                    signal: this.getSignal()
                 }
             );
 
@@ -219,7 +239,8 @@ export class DataverseService {
                         'Accept': 'application/json',
                         'OData-MaxVersion': '4.0',
                         'OData-Version': '4.0'
-                    }
+                    },
+                    signal: this.getSignal()
                 }
             );
 
@@ -242,7 +263,8 @@ export class DataverseService {
                         'Accept': 'application/json',
                         'OData-MaxVersion': '4.0',
                         'OData-Version': '4.0'
-                    }
+                    },
+                    signal: this.getSignal()
                 }
             );
 
@@ -281,7 +303,8 @@ export class DataverseService {
                         'Accept': 'application/json',
                         'OData-MaxVersion': '4.0',
                         'OData-Version': '4.0'
-                    }
+                    },
+                    signal: this.getSignal()
                 }
             );
 
@@ -333,7 +356,8 @@ export class DataverseService {
         const response = await fetch(url, {
             headers: {
                 'Accept': '*/*'
-            }
+            },
+            signal: this.getSignal()
         });
 
         if (!response.ok) {
