@@ -1418,9 +1418,70 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
     const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
     // Track active render tasks for cancellation
     const renderTasksRef = useRef<Map<number, RenderTask>>(new Map());
+    // Track pages currently being rendered (ref to avoid stale closure issues)
+    const renderingPagesRef = useRef<Set<number>>(new Set());
+
+    // Render a single page - separated to avoid race conditions
+    const renderPage = useCallback(async (pageNum: number, canvas: HTMLCanvasElement) => {
+        // Check if already rendering this page (use ref, not state)
+        if (renderingPagesRef.current.has(pageNum)) {
+            return;
+        }
+
+        // Mark as rendering
+        renderingPagesRef.current.add(pageNum);
+        setRenderedPages(prev => new Map(prev).set(pageNum, 'rendering'));
+
+        try {
+            // Cancel any existing render task for this page
+            const existingTask = renderTasksRef.current.get(pageNum);
+            if (existingTask) {
+                existingTask.cancel();
+                renderTasksRef.current.delete(pageNum);
+            }
+
+            // Clear the canvas before rendering to prevent ghosting
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+            }
+
+            // Start new render and store the task
+            const renderTask = await pdfService.renderPage(pageNum, canvas, scale, rotation);
+            renderTasksRef.current.set(pageNum, renderTask);
+
+            // Wait for render to complete
+            await renderTask.promise;
+
+            // Clean up completed task
+            renderTasksRef.current.delete(pageNum);
+
+            // Get text content
+            const text = await pdfService.getTextContent(pageNum);
+            setTextContent(prev => new Map(prev).set(pageNum, text));
+
+            setRenderedPages(prev => new Map(prev).set(pageNum, 'done'));
+        } catch (e) {
+            // Handle RenderingCancelledException - expected when cancelled
+            if (e instanceof Error && e.message.includes('Rendering cancelled')) {
+                // Remove from rendering set so it can be retried
+                renderingPagesRef.current.delete(pageNum);
+                return;
+            }
+            console.error(`Error rendering page ${pageNum}:`, e);
+            setRenderedPages(prev => {
+                const next = new Map(prev);
+                next.delete(pageNum);
+                return next;
+            });
+        } finally {
+            // Always remove from rendering set when done
+            renderingPagesRef.current.delete(pageNum);
+        }
+    }, [pdfService, scale, rotation, setRenderedPages, setTextContent]);
 
     // Render visible pages
-    const renderVisiblePages = useCallback(async () => {
+    const renderVisiblePages = useCallback(() => {
         if (!containerRef.current) return;
 
         const container = containerRef.current;
@@ -1436,52 +1497,17 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
             const bottom = top + pageRef.offsetHeight;
 
             if (bottom >= viewportTop && top <= viewportBottom) {
-                if (!renderedPages.has(i)) {
-                    setRenderedPages(prev => new Map(prev).set(i, 'rendering'));
-
-                    try {
-                        const canvas = pageRef.querySelector('canvas');
-                        if (canvas) {
-                            // Cancel any existing render task for this page
-                            const existingTask = renderTasksRef.current.get(i);
-                            if (existingTask) {
-                                existingTask.cancel();
-                                renderTasksRef.current.delete(i);
-                            }
-
-                            // Start new render and store the task
-                            const renderTask = await pdfService.renderPage(i, canvas, scale, rotation);
-                            renderTasksRef.current.set(i, renderTask);
-
-                            // Wait for render to complete
-                            await renderTask.promise;
-
-                            // Clean up completed task
-                            renderTasksRef.current.delete(i);
-
-                            // Get text content
-                            const text = await pdfService.getTextContent(i);
-                            setTextContent(prev => new Map(prev).set(i, text));
-
-                            setRenderedPages(prev => new Map(prev).set(i, 'done'));
-                        }
-                    } catch (e) {
-                        // Handle RenderingCancelledException - expected when cancelled
-                        if (e instanceof Error && e.message.includes('Rendering cancelled')) {
-                            // This is expected when a render was cancelled, just return
-                            return;
-                        }
-                        console.error(`Error rendering page ${i}:`, e);
-                        setRenderedPages(prev => {
-                            const next = new Map(prev);
-                            next.delete(i);
-                            return next;
-                        });
+                // Check both state and ref to avoid duplicate renders
+                if (!renderedPages.has(i) && !renderingPagesRef.current.has(i)) {
+                    const canvas = pageRef.querySelector('canvas');
+                    if (canvas) {
+                        // Fire and forget - renderPage handles its own state
+                        renderPage(i, canvas);
                     }
                 }
             }
         }
-    }, [pdfService, pageViewports, scale, rotation, renderedPages, setRenderedPages, setTextContent]);
+    }, [pageViewports, renderedPages, renderPage]);
 
     // Cancel all render tasks when scale/rotation changes or on unmount
     useEffect(() => {
@@ -1491,6 +1517,7 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
                 task.cancel();
             });
             renderTasksRef.current.clear();
+            renderingPagesRef.current.clear();
         };
     }, [scale, rotation]);
 
@@ -1501,14 +1528,31 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
         }
     }, [pageViewports.length]);
 
-    // Initial render and scroll handler
+    // Initial render and scroll handler with throttling
     useEffect(() => {
         renderVisiblePages();
 
-        const handleScroll = () => {
-            renderVisiblePages();
+        let scrollThrottleTimer: NodeJS.Timeout | null = null;
+        let lastScrollTime = 0;
 
-            // Update current page based on scroll position
+        const handleScroll = () => {
+            const now = Date.now();
+
+            // Throttle render calls to prevent excessive rendering during fast scroll
+            if (now - lastScrollTime < CONFIG.SCROLL_THROTTLE_MS) {
+                // Schedule a render after throttle period if not already scheduled
+                if (!scrollThrottleTimer) {
+                    scrollThrottleTimer = setTimeout(() => {
+                        scrollThrottleTimer = null;
+                        renderVisiblePages();
+                    }, CONFIG.SCROLL_THROTTLE_MS);
+                }
+            } else {
+                lastScrollTime = now;
+                renderVisiblePages();
+            }
+
+            // Update current page based on scroll position (not throttled for UI responsiveness)
             if (!containerRef.current) return;
             const container = containerRef.current;
             const scrollTop = container.scrollTop;
@@ -1537,7 +1581,12 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
 
         const container = containerRef.current;
         container?.addEventListener('scroll', handleScroll);
-        return () => container?.removeEventListener('scroll', handleScroll);
+        return () => {
+            container?.removeEventListener('scroll', handleScroll);
+            if (scrollThrottleTimer) {
+                clearTimeout(scrollThrottleTimer);
+            }
+        };
     }, [renderVisiblePages, currentPage, onPageChange]);
 
     // Get matches for a specific page

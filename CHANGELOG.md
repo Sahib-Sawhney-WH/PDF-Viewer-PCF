@@ -2,6 +2,16 @@
 
 All notable changes to the RSM PDF Viewer PCF Control will be documented in this file.
 
+## [1.1.3] - 2025-12-18
+
+### Fixed
+
+- Fixed rendering glitches where text from different pages would overlap/merge
+- Added canvas clearing before each render to prevent ghosting
+- Added rendering lock (ref-based) to prevent race conditions during concurrent renders
+- Added scroll throttling to prevent excessive render calls during fast scrolling
+- Proper cleanup of rendering state on component unmount or scale/rotation changes
+
 ## [1.1.2] - 2025-12-18
 
 ### Fixed
