@@ -378,6 +378,3 @@ export class PdfService {
         }
     }
 }
-
-// Export a singleton instance
-export const pdfService = new PdfService();

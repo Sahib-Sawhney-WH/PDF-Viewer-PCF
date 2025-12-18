@@ -382,5 +382,3 @@ export class DataverseService {
         return null;
     }
 }
-
-export const dataverseService = new DataverseService();

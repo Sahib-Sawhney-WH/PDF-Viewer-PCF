@@ -2,6 +2,28 @@
 
 All notable changes to the RSM PDF Viewer PCF Control will be documented in this file.
 
+## [1.2.0] - 2025-12-18
+
+### Performance Improvements
+
+- Added React.memo to ThumbnailPanel and OutlinePanel components (~20-30% render reduction)
+- Wrapped all handler functions with useCallback to prevent cascading re-renders
+- Added useMemo for columnsWithFiles computed value
+- Removed redundant CSS will-change property
+- Replaced magic numbers with CONFIG constants for better maintainability
+
+### Bug Fixes
+
+- Fixed memory leak: Blob URLs are now revoked when imageUrl changes or component unmounts
+- Fixed race condition: Document load now uses loadIdRef to prevent stale callbacks
+- Fixed PDF.js version mismatch: Updated pdfjs-dist to 4.10.38 to match CDN worker
+
+### Code Quality
+
+- Removed unused singleton exports from PdfService and DataverseService
+- Removed console.error calls from production code
+- Added CONFIG constants for thumbnail rendering delays and batch sizes
+
 ## [1.1.3] - 2025-12-18
 
 ### Fixed

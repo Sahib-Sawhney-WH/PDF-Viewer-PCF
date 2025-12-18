@@ -3,7 +3,7 @@
  */
 
 import * as React from 'react';
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { PdfService, PdfMetadata, OutlineItem, TextContent, PageViewport, RenderTask } from '../services/PdfService';
 import { DataverseService, FileColumn, ViewerConfig } from '../services/DataverseService';
 
@@ -17,6 +17,17 @@ const CONFIG = {
     THUMBNAIL_SCALE: 0.2,
     SCROLL_THROTTLE_MS: 100,
     IMAGE_EXTENSIONS: ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'tiff', 'tif'],
+    // Thumbnail rendering
+    THUMBNAIL_PREFETCH_BEFORE: 3,
+    THUMBNAIL_PREFETCH_AFTER: 10,
+    THUMBNAIL_MAX_PAGES: 30,
+    THUMBNAIL_BATCH_DELAY_MS: 50,
+    THUMBNAIL_INITIAL_DELAY_MS: 300,
+    THUMBNAIL_DEFERRED_DELAY_MS: 500,
+    // UI delays
+    FOCUS_DELAY_MS: 100,
+    // Render task management
+    RENDER_TASK_TIMEOUT_MS: 10000,
 };
 
 export interface IPdfViewerProps {
@@ -106,6 +117,12 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
     const canvasContainerRef = useRef<HTMLDivElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
 
+    // Memoized computed values
+    const columnsWithFiles = useMemo(() =>
+        viewerConfig?.fileColumns.filter(c => c.hasFile) || [],
+        [viewerConfig?.fileColumns]
+    );
+
     // Theme detection
     useEffect(() => {
         if (theme === 'auto') {
@@ -168,8 +185,23 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
         setPageInputValue(currentPage.toString());
     }, [currentPage]);
 
+    // Cleanup blob URLs to prevent memory leaks
+    useEffect(() => {
+        return () => {
+            if (imageUrl && imageUrl.startsWith('blob:')) {
+                URL.revokeObjectURL(imageUrl);
+            }
+        };
+    }, [imageUrl]);
+
+    // Load ID ref to prevent stale callbacks from updating state during rapid document switches
+    const loadIdRef = useRef(0);
+
     // Load document from selected column
     const loadDocument = useCallback(async (columnName: string) => {
+        // Increment load ID to prevent stale callbacks from updating state
+        const thisLoadId = ++loadIdRef.current;
+
         setViewerState('loading');
         setLoadingMessage('Loading document...');
         setLoadingProgress(0);
@@ -193,6 +225,9 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
         // Increment document key to force canvas remount (prevents canvas reuse errors)
         setDocumentKey(prev => prev + 1);
 
+        // Abort if a newer load has started
+        if (loadIdRef.current !== thisLoadId) return;
+
         try {
             const fileUrl = dataverseService.getFileUrl(columnName);
 
@@ -200,6 +235,7 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
             // Check if this is an image column based on metadata
             if (isImageFile(columnName)) {
                 // Load as image
+                if (loadIdRef.current !== thisLoadId) return;
                 setFileType('image');
                 setImageUrl(fileUrl + '?_=' + Date.now());
                 setTotalPages(1);
@@ -211,8 +247,14 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
                 setLoadingMessage('Loading PDF...');
 
                 await pdfService.loadFromUrl(fileUrl, (loaded, total) => {
-                    if (total > 0) setLoadingProgress((loaded / total) * 100);
+                    // Only update progress if this is still the current load
+                    if (loadIdRef.current === thisLoadId && total > 0) {
+                        setLoadingProgress((loaded / total) * 100);
+                    }
                 });
+
+                // Abort if a newer load has started
+                if (loadIdRef.current !== thisLoadId) return;
 
                 const pageCount = pdfService.getPageCount();
                 setTotalPages(pageCount);
@@ -220,6 +262,7 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
 
                 // Get first page viewport and show immediately
                 const firstViewport = await pdfService.getPageViewport(1, 1);
+                if (loadIdRef.current !== thisLoadId) return;
                 setPageViewports([firstViewport]);
 
                 // Show viewer NOW - don't wait for anything else
@@ -227,22 +270,35 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
 
                 // Load ALL remaining viewports in a single batch after render
                 requestAnimationFrame(() => {
+                    // Check if still current load before starting async work
+                    if (loadIdRef.current !== thisLoadId) return;
                     (async () => {
                         const allViewports: PageViewport[] = [firstViewport];
                         for (let i = 2; i <= pageCount; i++) {
+                            if (loadIdRef.current !== thisLoadId) return;
                             const vp = await pdfService.getPageViewport(i, 1);
                             allViewports.push(vp);
                         }
+                        if (loadIdRef.current !== thisLoadId) return;
                         setPageViewports(allViewports);
 
                         // Load metadata after viewports
-                        pdfService.getMetadata().then(setMetadata).catch(() => { /* ignore */ });
-                        pdfService.getOutline().then(setOutline).catch(() => { /* ignore */ });
+                        if (loadIdRef.current === thisLoadId) {
+                            pdfService.getMetadata().then(meta => {
+                                if (loadIdRef.current === thisLoadId) setMetadata(meta);
+                                return meta;
+                            }).catch(() => { /* ignore */ });
+                            pdfService.getOutline().then(out => {
+                                if (loadIdRef.current === thisLoadId) setOutline(out);
+                                return out;
+                            }).catch(() => { /* ignore */ });
+                        }
                     })();
                 });
             }
         } catch (error) {
-            console.error('Error loading document:', error);
+            // Only show error if this is still the current load
+            if (loadIdRef.current !== thisLoadId) return;
             const errMsg = error instanceof Error ? error.message : 'Unknown error';
             if (errMsg.includes('400') || errMsg.includes('404') || errMsg.includes('not found')) {
                 setErrorMessage('No file found in this column. Please ensure a file has been uploaded.');
@@ -290,8 +346,7 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
             setOutline(docOutline);
 
             setViewerState('viewing');
-        } catch (error) {
-            console.error('Error loading PDF:', error);
+        } catch {
             setErrorMessage('Failed to load PDF. Check the URL and try again.');
             setViewerState('error');
         }
@@ -364,7 +419,6 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
                 setViewerState('viewing');
             }
         } catch (error) {
-            console.error('Error loading file:', error);
             const errorMsg = error instanceof Error ? error.message : 'Unknown error';
             setErrorMessage(`Failed to load file: ${errorMsg}`);
             setViewerState('error');
@@ -415,24 +469,24 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
     }, []);
 
     // Zoom handlers
-    const zoomIn = () => {
+    const zoomIn = useCallback(() => {
         applyZoom(currentScale * CONFIG.ZOOM_STEP);
-    };
+    }, [applyZoom, currentScale]);
 
-    const zoomOut = () => {
+    const zoomOut = useCallback(() => {
         applyZoom(currentScale / CONFIG.ZOOM_STEP);
-    };
+    }, [applyZoom, currentScale]);
 
-    const setZoom = (value: string) => {
+    const setZoom = useCallback((value: string) => {
         if (['auto', 'page-fit', 'page-width'].includes(value)) {
             applyZoom(calculateScale(value), value);
         } else {
             applyZoom(parseFloat(value));
         }
-    };
+    }, [applyZoom, calculateScale]);
 
     // Navigation handlers - scroll within container, not browser window
-    const goToPage = (page: number) => {
+    const goToPage = useCallback((page: number) => {
         const targetPage = Math.max(1, Math.min(totalPages, page));
         setCurrentPage(targetPage);
 
@@ -450,23 +504,23 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
                 behavior: 'smooth'
             });
         }
-    };
+    }, [totalPages]);
 
-    const previousPage = () => goToPage(currentPage - 1);
-    const nextPage = () => goToPage(currentPage + 1);
+    const previousPage = useCallback(() => goToPage(currentPage - 1), [goToPage, currentPage]);
+    const nextPage = useCallback(() => goToPage(currentPage + 1), [goToPage, currentPage]);
 
     // Handle page input change - only allow valid numbers up to totalPages digit length
-    const handlePageInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const handlePageInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
         const value = e.target.value;
         // Only allow digits, limit to reasonable length (max digits in totalPages + 1)
         const maxDigits = Math.max(totalPages.toString().length + 1, 4);
         if (value === '' || (/^\d+$/.test(value) && value.length <= maxDigits)) {
             setPageInputValue(value);
         }
-    };
+    }, [totalPages]);
 
     // Handle page input blur - navigate to the entered page
-    const handlePageInputBlur = () => {
+    const handlePageInputBlur = useCallback(() => {
         const page = parseInt(pageInputValue, 10);
         if (!isNaN(page) && page >= 1 && page <= totalPages) {
             goToPage(page);
@@ -474,10 +528,10 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
             // Reset to current page if invalid
             setPageInputValue(currentPage.toString());
         }
-    };
+    }, [pageInputValue, totalPages, goToPage, currentPage]);
 
     // Handle page input key press - navigate on Enter
-    const handlePageInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    const handlePageInputKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
         if (e.key === 'Enter') {
             e.preventDefault();
             (e.target as HTMLInputElement).blur();
@@ -486,31 +540,31 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
             setPageInputValue(currentPage.toString());
             (e.target as HTMLInputElement).blur();
         }
-    };
+    }, [currentPage]);
 
     // Rotation handlers
-    const rotateLeft = () => {
+    const rotateLeft = useCallback(() => {
         setCurrentRotation((prev) => (prev - 90 + 360) % 360);
         setRenderedPages(new Map());
         setTextContent(new Map());
-    };
+    }, []);
 
-    const rotateRight = () => {
+    const rotateRight = useCallback(() => {
         setCurrentRotation((prev) => (prev + 90) % 360);
         setRenderedPages(new Map());
         setTextContent(new Map());
-    };
+    }, []);
 
     // Toggle handlers
-    const toggleSidebar = () => setSidebarVisible(prev => !prev);
-    const toggleDarkMode = () => setDarkMode(prev => !prev);
-    const toggleFullscreen = () => {
+    const toggleSidebar = useCallback(() => setSidebarVisible(prev => !prev), []);
+    const toggleDarkMode = useCallback(() => setDarkMode(prev => !prev), []);
+    const toggleFullscreen = useCallback(() => {
         if (!document.fullscreenElement) {
             containerRef.current?.requestFullscreen();
         } else {
             document.exitFullscreen();
         }
-    };
+    }, []);
 
     // Search - find all matches with their positions (internal implementation)
     const performSearch = useCallback((text: string) => {
@@ -630,7 +684,7 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
     // Open find panel
     const openFindPanel = useCallback(() => {
         setShowFindPanel(true);
-        setTimeout(() => searchInputRef.current?.focus(), 100);
+        setTimeout(() => searchInputRef.current?.focus(), CONFIG.FOCUS_DELAY_MS);
     }, []);
 
     // Close find panel
@@ -675,8 +729,8 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
             link.click();
             document.body.removeChild(link);
             URL.revokeObjectURL(url);
-        } catch (error) {
-            console.error('Download failed:', error);
+        } catch {
+            // Download failed silently - user will notice
         }
     };
 
@@ -794,7 +848,6 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
 
     // Render config/picker state
     if (viewerState === 'config') {
-        const columnsWithFiles = viewerConfig?.fileColumns.filter(c => c.hasFile) || [];
         const isTestMode = !viewerConfig?.tableName || !viewerConfig?.recordId;
 
         return (
@@ -929,7 +982,6 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
 
     // Render viewer state
     const zoomPercent = Math.round(currentScale * 100);
-    const columnsWithFiles = viewerConfig?.fileColumns.filter(c => c.hasFile) || [];
 
     return (
         <div className="pdf-viewer-container" data-theme={darkMode ? 'dark' : 'light'} ref={containerRef}
@@ -1259,7 +1311,7 @@ interface ThumbnailPanelProps {
     onPageClick: (page: number) => void;
 }
 
-const ThumbnailPanel: React.FC<ThumbnailPanelProps> = ({ pdfService, totalPages, currentPage, onPageClick }) => {
+const ThumbnailPanel: React.FC<ThumbnailPanelProps> = React.memo(({ pdfService, totalPages, currentPage, onPageClick }) => {
     const [thumbnails, setThumbnails] = useState<Map<number, string>>(new Map());
     const thumbnailTasksRef = useRef<Map<number, RenderTask>>(new Map());
     const mountedRef = useRef(true);
@@ -1269,8 +1321,8 @@ const ThumbnailPanel: React.FC<ThumbnailPanelProps> = ({ pdfService, totalPages,
 
         const renderThumbnails = async () => {
             // Render visible thumbnails first (around current page)
-            const start = Math.max(1, currentPage - 3);
-            const end = Math.min(totalPages, currentPage + 10);
+            const start = Math.max(1, currentPage - CONFIG.THUMBNAIL_PREFETCH_BEFORE);
+            const end = Math.min(totalPages, currentPage + CONFIG.THUMBNAIL_PREFETCH_AFTER);
 
             // First batch: pages near current view
             for (let i = start; i <= end && mountedRef.current; i++) {
@@ -1290,8 +1342,8 @@ const ThumbnailPanel: React.FC<ThumbnailPanelProps> = ({ pdfService, totalPages,
             }
 
             // Second batch: remaining pages (deferred, slower)
-            await new Promise(resolve => setTimeout(resolve, 500));
-            for (let i = 1; i <= Math.min(totalPages, 30) && mountedRef.current; i++) {
+            await new Promise(resolve => setTimeout(resolve, CONFIG.THUMBNAIL_DEFERRED_DELAY_MS));
+            for (let i = 1; i <= Math.min(totalPages, CONFIG.THUMBNAIL_MAX_PAGES) && mountedRef.current; i++) {
                 if (thumbnails.has(i)) continue;
                 try {
                     const canvas = document.createElement('canvas');
@@ -1303,7 +1355,7 @@ const ThumbnailPanel: React.FC<ThumbnailPanelProps> = ({ pdfService, totalPages,
                         setThumbnails(prev => new Map(prev).set(i, canvas.toDataURL()));
                     }
                     // Small delay between thumbnails to not block main thread
-                    await new Promise(resolve => setTimeout(resolve, 50));
+                    await new Promise(resolve => setTimeout(resolve, CONFIG.THUMBNAIL_BATCH_DELAY_MS));
                 } catch {
                     // Skip failed thumbnails
                 }
@@ -1312,7 +1364,7 @@ const ThumbnailPanel: React.FC<ThumbnailPanelProps> = ({ pdfService, totalPages,
 
         if (totalPages > 0) {
             // Defer thumbnail rendering to not block initial PDF render
-            const timer = setTimeout(renderThumbnails, 300);
+            const timer = setTimeout(renderThumbnails, CONFIG.THUMBNAIL_INITIAL_DELAY_MS);
             return () => {
                 clearTimeout(timer);
                 mountedRef.current = false;
@@ -1346,7 +1398,7 @@ const ThumbnailPanel: React.FC<ThumbnailPanelProps> = ({ pdfService, totalPages,
             ))}
         </div>
     );
-};
+});
 
 // Outline Panel Component
 interface OutlinePanelProps {
@@ -1355,7 +1407,7 @@ interface OutlinePanelProps {
     onNavigate: (page: number) => void;
 }
 
-const OutlinePanel: React.FC<OutlinePanelProps> = ({ outline, pdfService, onNavigate }) => {
+const OutlinePanel: React.FC<OutlinePanelProps> = React.memo(({ outline, pdfService, onNavigate }) => {
     const handleClick = async (item: OutlineItem) => {
         const pageIndex = await pdfService.getPageIndexFromDest(item.dest);
         onNavigate(pageIndex + 1);
@@ -1380,7 +1432,7 @@ const OutlinePanel: React.FC<OutlinePanelProps> = ({ outline, pdfService, onNavi
     }
 
     return <>{renderItems(outline)}</>;
-};
+});
 
 // PDF Canvas Component - wrapped in React.memo for performance
 interface PdfCanvasProps {
@@ -1468,7 +1520,7 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
                 renderingPagesRef.current.delete(pageNum);
                 return;
             }
-            console.error(`Error rendering page ${pageNum}:`, e);
+            // Page render failed - remove from rendering map to allow retry
             setRenderedPages(prev => {
                 const next = new Map(prev);
                 next.delete(pageNum);

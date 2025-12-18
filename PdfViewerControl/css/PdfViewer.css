@@ -470,8 +470,7 @@
     overflow: hidden;
     position: relative;
     background: var(--pdf-canvas-bg);
-    /* GPU acceleration hints for smoother scrolling */
-    will-change: scroll-position;
+    /* contain provides paint optimization, will-change not needed */
     contain: layout style;
     /* Smooth transition when sidebar toggles */
     transition: width 0.3s ease;
