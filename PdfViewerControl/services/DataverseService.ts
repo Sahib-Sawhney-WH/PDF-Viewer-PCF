@@ -224,26 +224,33 @@ export class DataverseService {
 
     /**
      * Discover file columns on the entity
+     * Performance: Runs File and Image attribute queries in parallel
      */
     async discoverFileColumns(): Promise<FileColumn[]> {
         if (!this.config.tableName) return [];
 
         this.config.fileColumns = [];
 
-        try {
-            // Get File attributes
-            const fileResponse = await fetch(
-                `${this.config.baseUrl}/api/data/v9.2/EntityDefinitions(LogicalName='${this.config.tableName}')/Attributes/Microsoft.Dynamics.CRM.FileAttributeMetadata?$select=LogicalName,DisplayName,SchemaName`,
-                {
-                    headers: {
-                        'Accept': 'application/json',
-                        'OData-MaxVersion': '4.0',
-                        'OData-Version': '4.0'
-                    },
-                    signal: this.getSignal()
-                }
-            );
+        const headers = {
+            'Accept': 'application/json',
+            'OData-MaxVersion': '4.0',
+            'OData-Version': '4.0'
+        };
 
+        try {
+            // Run both File and Image attribute queries in parallel for faster initialization
+            const [fileResponse, imageResponse] = await Promise.all([
+                fetch(
+                    `${this.config.baseUrl}/api/data/v9.2/EntityDefinitions(LogicalName='${this.config.tableName}')/Attributes/Microsoft.Dynamics.CRM.FileAttributeMetadata?$select=LogicalName,DisplayName,SchemaName`,
+                    { headers, signal: this.getSignal() }
+                ),
+                fetch(
+                    `${this.config.baseUrl}/api/data/v9.2/EntityDefinitions(LogicalName='${this.config.tableName}')/Attributes/Microsoft.Dynamics.CRM.ImageAttributeMetadata?$select=LogicalName,DisplayName,SchemaName`,
+                    { headers, signal: this.getSignal() }
+                )
+            ]);
+
+            // Process File attributes
             if (fileResponse.ok) {
                 const fileData = await fileResponse.json();
                 for (const attr of fileData.value) {
@@ -255,19 +262,7 @@ export class DataverseService {
                 }
             }
 
-            // Get Image attributes
-            const imageResponse = await fetch(
-                `${this.config.baseUrl}/api/data/v9.2/EntityDefinitions(LogicalName='${this.config.tableName}')/Attributes/Microsoft.Dynamics.CRM.ImageAttributeMetadata?$select=LogicalName,DisplayName,SchemaName`,
-                {
-                    headers: {
-                        'Accept': 'application/json',
-                        'OData-MaxVersion': '4.0',
-                        'OData-Version': '4.0'
-                    },
-                    signal: this.getSignal()
-                }
-            );
-
+            // Process Image attributes
             if (imageResponse.ok) {
                 const imageData = await imageResponse.json();
                 for (const attr of imageData.value) {
@@ -282,7 +277,7 @@ export class DataverseService {
                 }
             }
         } catch {
-            // Error discovering columns
+            // Error discovering columns - silently fail
         }
 
         return this.config.fileColumns;

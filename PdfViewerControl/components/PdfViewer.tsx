@@ -28,6 +28,9 @@ const CONFIG = {
     FOCUS_DELAY_MS: 100,
     // Render task management
     RENDER_TASK_TIMEOUT_MS: 10000,
+    // Virtual scrolling - reduces DOM nodes for large documents
+    VIRTUAL_SCROLL_BUFFER_BEFORE: 3,  // Pages to render before current
+    VIRTUAL_SCROLL_BUFFER_AFTER: 5,   // Pages to render after current
 };
 
 export interface IPdfViewerProps {
@@ -1317,6 +1320,8 @@ const ThumbnailPanel: React.FC<ThumbnailPanelProps> = React.memo(({ pdfService, 
     const thumbnailTasksRef = useRef<Map<number, RenderTask>>(new Map());
     const mountedRef = useRef(true);
     const idleCallbackRef = useRef<number | null>(null);
+    const containerRef = useRef<HTMLDivElement>(null);
+    const [visibleRange, setVisibleRange] = useState({ start: 1, end: 20 });
 
     // Helper to schedule work during idle time (with fallback for older browsers)
     const scheduleIdleWork = useCallback((callback: () => void): number => {
@@ -1334,6 +1339,44 @@ const ThumbnailPanel: React.FC<ThumbnailPanelProps> = React.memo(({ pdfService, 
             clearTimeout(id);
         }
     }, []);
+
+    // Track visible range for thumbnail virtualization
+    useEffect(() => {
+        const container = containerRef.current;
+        if (!container || totalPages <= 30) return; // Only virtualize for large documents
+
+        const updateVisibleRange = () => {
+            const scrollTop = container.scrollTop;
+            const containerHeight = container.clientHeight;
+            const itemHeight = 220; // Approximate height of thumbnail item (200px + margin)
+
+            const startIndex = Math.floor(scrollTop / itemHeight);
+            const visibleCount = Math.ceil(containerHeight / itemHeight);
+
+            // Add buffer pages before and after
+            const start = Math.max(1, startIndex - 5);
+            const end = Math.min(totalPages, startIndex + visibleCount + 10);
+
+            setVisibleRange({ start, end });
+        };
+
+        // Throttled scroll handler
+        let ticking = false;
+        const handleScroll = () => {
+            if (!ticking) {
+                requestAnimationFrame(() => {
+                    updateVisibleRange();
+                    ticking = false;
+                });
+                ticking = true;
+            }
+        };
+
+        container.addEventListener('scroll', handleScroll, { passive: true });
+        updateVisibleRange(); // Initial calculation
+
+        return () => container.removeEventListener('scroll', handleScroll);
+    }, [totalPages]);
 
     useEffect(() => {
         mountedRef.current = true;
@@ -1423,22 +1466,38 @@ const ThumbnailPanel: React.FC<ThumbnailPanelProps> = React.memo(({ pdfService, 
         };
     }, [pdfService, totalPages, currentPage, scheduleIdleWork, cancelIdleWork]);
 
+    // For large documents (30+ pages), use virtualization
+    const useVirtualization = totalPages > 30;
+    const itemHeight = 220; // Approximate height per thumbnail
+
     return (
-        <div className="pdf-thumbnail-container">
-            {Array.from({ length: totalPages }, (_, i) => i + 1).map((pageNum) => (
-                <div
-                    key={pageNum}
-                    className={`pdf-thumbnail-item ${pageNum === currentPage ? 'active' : ''}`}
-                    onClick={() => onPageClick(pageNum)}
-                >
-                    {thumbnails.get(pageNum) ? (
-                        <img src={thumbnails.get(pageNum)} alt={`Page ${pageNum}`} />
-                    ) : (
-                        <div className="pdf-page-placeholder" style={{ width: 150, height: 200 }} />
-                    )}
-                    <div className="pdf-thumbnail-label">Page {pageNum}</div>
-                </div>
-            ))}
+        <div className="pdf-thumbnail-container" ref={containerRef}>
+            {useVirtualization && (
+                /* Top spacer for virtualized thumbnails */
+                <div style={{ height: (visibleRange.start - 1) * itemHeight }} />
+            )}
+
+            {Array.from({ length: totalPages }, (_, i) => i + 1)
+                .filter(pageNum => !useVirtualization || (pageNum >= visibleRange.start && pageNum <= visibleRange.end))
+                .map((pageNum) => (
+                    <div
+                        key={pageNum}
+                        className={`pdf-thumbnail-item ${pageNum === currentPage ? 'active' : ''}`}
+                        onClick={() => onPageClick(pageNum)}
+                    >
+                        {thumbnails.get(pageNum) ? (
+                            <img src={thumbnails.get(pageNum)} alt={`Page ${pageNum}`} />
+                        ) : (
+                            <div className="pdf-page-placeholder" style={{ width: 150, height: 200 }} />
+                        )}
+                        <div className="pdf-thumbnail-label">Page {pageNum}</div>
+                    </div>
+                ))}
+
+            {useVirtualization && (
+                /* Bottom spacer for virtualized thumbnails */
+                <div style={{ height: Math.max(0, totalPages - visibleRange.end) * itemHeight }} />
+            )}
         </div>
     );
 });
@@ -1521,6 +1580,8 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
     const observerRef = useRef<IntersectionObserver | null>(null);
     // Track visible pages and their intersection ratios for current page detection
     const visiblePagesRef = useRef<Map<number, number>>(new Map());
+    // Debounce timer for current page updates
+    const pageChangeDebounceRef = useRef<NodeJS.Timeout | null>(null);
 
     // Render a single page - separated to avoid race conditions
     const renderPage = useCallback(async (pageNum: number, canvas: HTMLCanvasElement) => {
@@ -1601,19 +1662,26 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
             visiblePagesRef.current.delete(pageNum);
         }
 
-        // Update current page based on most visible page
-        let mostVisible = 1;
-        let maxRatio = 0;
-        visiblePagesRef.current.forEach((pageRatio, num) => {
-            if (pageRatio > maxRatio) {
-                maxRatio = pageRatio;
-                mostVisible = num;
-            }
-        });
-
-        if (visiblePagesRef.current.size > 0 && mostVisible !== currentPage) {
-            onPageChange(mostVisible);
+        // Debounce current page updates to prevent rapid flickering
+        if (pageChangeDebounceRef.current) {
+            clearTimeout(pageChangeDebounceRef.current);
         }
+
+        pageChangeDebounceRef.current = setTimeout(() => {
+            // Update current page based on most visible page
+            let mostVisible = 1;
+            let maxRatio = 0;
+            visiblePagesRef.current.forEach((pageRatio, num) => {
+                if (pageRatio > maxRatio) {
+                    maxRatio = pageRatio;
+                    mostVisible = num;
+                }
+            });
+
+            if (visiblePagesRef.current.size > 0 && mostVisible !== currentPage) {
+                onPageChange(mostVisible);
+            }
+        }, 50); // 50ms debounce
     }, [renderedPages, renderPage, currentPage, onPageChange]);
 
     // Cancel all render tasks when scale/rotation changes or on unmount
@@ -1627,6 +1695,9 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
             renderTaskStartTimesRef.current.clear();
             renderingPagesRef.current.clear();
             visiblePagesRef.current.clear();
+            if (pageChangeDebounceRef.current) {
+                clearTimeout(pageChangeDebounceRef.current);
+            }
         };
     }, [scale, rotation]);
 
@@ -1694,22 +1765,90 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
         };
     }, [pageViewports.length, handlePageVisible]);
 
-    // Get matches for a specific page
-    const getPageMatches = useCallback((pageNum: number) => {
-        return searchMatches.filter(m => m.pageNum === pageNum);
+    // Pre-compute matches grouped by page for O(1) lookup instead of O(n) filtering per render
+    const matchesByPage = useMemo(() => {
+        const map = new Map<number, typeof searchMatches>();
+        searchMatches.forEach(match => {
+            const arr = map.get(match.pageNum) || [];
+            arr.push(match);
+            map.set(match.pageNum, arr);
+        });
+        return map;
     }, [searchMatches]);
 
-    // Check if a match is the current match
-    const isCurrentMatch = useCallback((pageNum: number, itemIndex: number) => {
-        if (currentMatchIndex < 0 || currentMatchIndex >= searchMatches.length) return false;
-        const current = searchMatches[currentMatchIndex];
-        return current.pageNum === pageNum && current.itemIndex === itemIndex;
+    // Get matches for a specific page - O(1) lookup from pre-computed map
+    const getPageMatches = useCallback((pageNum: number) => {
+        return matchesByPage.get(pageNum) || [];
+    }, [matchesByPage]);
+
+    // Pre-compute current match for O(1) lookup
+    const currentMatch = useMemo(() => {
+        if (currentMatchIndex < 0 || currentMatchIndex >= searchMatches.length) return null;
+        return searchMatches[currentMatchIndex];
     }, [searchMatches, currentMatchIndex]);
+
+    // Check if a match is the current match - O(1) comparison
+    const isCurrentMatch = useCallback((pageNum: number, itemIndex: number) => {
+        if (!currentMatch) return false;
+        return currentMatch.pageNum === pageNum && currentMatch.itemIndex === itemIndex;
+    }, [currentMatch]);
+
+    // Virtual scrolling: calculate which pages to render
+    // For large documents (100+ pages), only render pages near the current view
+    const virtualWindow = useMemo(() => {
+        const totalPages = pageViewports.length;
+        // For small documents, render all pages
+        if (totalPages <= 20) {
+            return { startPage: 1, endPage: totalPages, useVirtual: false };
+        }
+        // For large documents, use virtual scrolling
+        const startPage = Math.max(1, currentPage - CONFIG.VIRTUAL_SCROLL_BUFFER_BEFORE);
+        const endPage = Math.min(totalPages, currentPage + CONFIG.VIRTUAL_SCROLL_BUFFER_AFTER);
+        return { startPage, endPage, useVirtual: true };
+    }, [pageViewports.length, currentPage]);
+
+    // Calculate cumulative heights for spacers
+    const pageHeights = useMemo(() => {
+        return pageViewports.map((vp, index) => {
+            const isRotated = rotation % 180 !== 0;
+            return (isRotated ? vp.width : vp.height) * scale + 20; // 20px margin
+        });
+    }, [pageViewports, scale, rotation]);
+
+    // Calculate spacer heights for virtual scrolling
+    const { topSpacerHeight, bottomSpacerHeight } = useMemo(() => {
+        if (!virtualWindow.useVirtual) {
+            return { topSpacerHeight: 0, bottomSpacerHeight: 0 };
+        }
+        let top = 0;
+        let bottom = 0;
+        for (let i = 0; i < pageHeights.length; i++) {
+            const pageNum = i + 1;
+            if (pageNum < virtualWindow.startPage) {
+                top += pageHeights[i];
+            } else if (pageNum > virtualWindow.endPage) {
+                bottom += pageHeights[i];
+            }
+        }
+        return { topSpacerHeight: top, bottomSpacerHeight: bottom };
+    }, [virtualWindow, pageHeights]);
 
     return (
         <div className="pdf-page-wrapper-container" ref={containerRef}>
+            {/* Top spacer for virtual scrolling */}
+            {virtualWindow.useVirtual && topSpacerHeight > 0 && (
+                <div className="pdf-virtual-spacer" style={{ height: topSpacerHeight }} />
+            )}
+
             {pageViewports.map((viewport, index) => {
                 const pageNum = index + 1;
+
+                // Skip pages outside virtual window for large documents
+                if (virtualWindow.useVirtual &&
+                    (pageNum < virtualWindow.startPage || pageNum > virtualWindow.endPage)) {
+                    return null;
+                }
+
                 const isRotated = rotation % 180 !== 0;
                 const width = (isRotated ? viewport.height : viewport.width) * scale;
                 const height = (isRotated ? viewport.width : viewport.height) * scale;
@@ -1780,6 +1919,11 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
                     </div>
                 );
             })}
+
+            {/* Bottom spacer for virtual scrolling */}
+            {virtualWindow.useVirtual && bottomSpacerHeight > 0 && (
+                <div className="pdf-virtual-spacer" style={{ height: bottomSpacerHeight }} />
+            )}
         </div>
     );
 });
