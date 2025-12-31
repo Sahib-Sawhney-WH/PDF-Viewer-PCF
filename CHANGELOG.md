@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to the RSM PDF Viewer PCF Control will be documented in this file.
+All notable changes to the PDF Viewer PCF Control will be documented in this file.
 
 ## [1.2.3] - 2025-12-30
 
@@ -146,7 +146,7 @@ All notable changes to the RSM PDF Viewer PCF Control will be documented in this
 
 ### Added
 
-- Initial release of RSM PDF Viewer PCF Control
+- Initial release of PDF Viewer PCF Control
 - PDF rendering using PDF.js v4.10.38
 - Image file support (JPG, PNG, GIF, BMP, WebP, SVG, TIFF)
 - Zoom controls (25%-500%, fit page, fit width, auto)

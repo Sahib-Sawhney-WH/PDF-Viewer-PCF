@@ -1,4 +1,4 @@
-# RSM PDF Viewer PCF Control
+# PDF Viewer PCF Control
 
 A feature-rich PDF and image viewer control for Power Apps Model-Driven Apps. View, navigate, search, and interact with PDF documents and images stored in Dataverse file columns.
 
@@ -24,8 +24,8 @@ A feature-rich PDF and image viewer control for Power Apps Model-Driven Apps. Vi
 ### Import Solution
 
 1. Download the solution file:
-   - **Managed**: `Solutions/RSMPdfViewer/bin/Release/RSMPdfViewer.zip`
-   - **Unmanaged**: `Solutions/RSMPdfViewer/bin/Debug/RSMPdfViewer.zip`
+   - **Managed**: `Solutions/PdfViewer/bin/Release/PdfViewer.zip`
+   - **Unmanaged**: `Solutions/PdfViewer/bin/Debug/PdfViewer.zip`
 
 2. Go to [Power Apps](https://make.powerapps.com)
 
@@ -123,7 +123,7 @@ npm start
 npm run build
 
 # Build solution (managed)
-cd Solutions/RSMPdfViewer
+cd Solutions/PdfViewer
 dotnet build --configuration Release
 
 # Build solution (unmanaged)
@@ -145,7 +145,7 @@ PDF Viewer/
 │   ├── index.ts                # PCF lifecycle
 │   └── ControlManifest.Input.xml
 ├── Solutions/
-│   └── RSMPdfViewer/           # Solution project
+│   └── PdfViewer/              # Solution project
 ├── package.json
 └── README.md
 ```
