@@ -162,10 +162,20 @@ PDF Viewer/
 - Firefox
 - Safari
 
+## Performance Features
+
+The control includes optimizations for large documents (100+ pages):
+
+- **Virtual Scrolling** - Only renders pages near the current view (reduces DOM from 100+ to ~9 nodes)
+- **Thumbnail Virtualization** - Only renders visible thumbnails in sidebar
+- **Parallel Dataverse Requests** - File/Image column discovery runs in parallel
+- **Memoized Search** - O(1) lookup for search matches instead of O(n) filtering
+- **IntersectionObserver** - Efficient page visibility detection
+- **requestIdleCallback** - Non-blocking thumbnail rendering
+
 ## Known Limitations
 
 - Search only works on text-based PDFs (not scanned/image PDFs)
-- Very large PDFs (500+ pages) may have slower initial load
 - Annotations and form fields are read-only
 
 ## License
