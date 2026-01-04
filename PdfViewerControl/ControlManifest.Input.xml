@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <manifest>
-  <control namespace="PdfViewer" constructor="PdfViewerControl" version="1.2.3" display-name-key="PDF Viewer" description-key="View PDF and image files from Dataverse file columns" control-type="standard">
+  <control namespace="PdfViewer" constructor="PdfViewerControl" version="1.2.4" display-name-key="PDF Viewer" description-key="View PDF and image files from Dataverse file columns" control-type="standard">
     <external-service-usage enabled="false">
     </external-service-usage>
 

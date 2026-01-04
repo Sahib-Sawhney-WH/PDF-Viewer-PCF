@@ -2,6 +2,40 @@
 
 All notable changes to the PDF Viewer PCF Control will be documented in this file.
 
+## [1.2.4] - 2026-01-04
+
+### Bug Fixes (Navigation Synchronization)
+
+- **Fixed sidebar/page mismatch** - Sidebar thumbnail now correctly matches current page in main viewer
+  - Added `isNavigatingRef` flag to prevent IntersectionObserver from overriding programmatic navigation
+  - IntersectionObserver skips page updates during navigation operations
+
+- **Fixed thumbnail click navigation** - Clicking sidebar thumbnail now scrolls to correct page on first try
+  - Rewrote `goToPage()` to use pending scroll pattern that waits for virtual window re-render
+  - Added `useEffect` that scrolls AFTER state update ensures target page is in DOM
+  - Uses `requestAnimationFrame` to guarantee DOM has updated before scrolling
+  - Changed scroll behavior to 'instant' for programmatic navigation (eliminates race conditions)
+
+- **Fixed text/canvas disappearing** - Page content no longer flickers during re-rendering
+  - Added `everRenderedRef` to track pages that have been rendered at least once
+  - Canvas stays visible even during re-rendering if it was previously rendered
+  - Placeholder only shows for pages that have never been rendered
+
+- **Fixed page number field navigation** - Arrow keys and page input now work correctly on first try
+
+### Performance Improvements
+
+- **Expanded virtual window buffer** - Increased from 3/5 pages to 5/8 pages for smoother navigation
+- **Increased virtual scroll threshold** - Changed from 20 to 30 pages before enabling virtual scrolling
+  - Documents with <=30 pages now render all pages (no virtual scrolling needed)
+
+### Technical Details
+
+- New refs: `isNavigatingRef`, `pendingScrollRef`, `everRenderedRef`
+- Navigation flag prevents IntersectionObserver debounce from overriding programmatic navigation
+- Pending scroll pattern ensures DOM is ready before attempting scroll
+- New CONFIG constant: `VIRTUAL_SCROLL_THRESHOLD`
+
 ## [1.2.3] - 2025-12-30
 
 ### Performance Improvements (Large Document Optimization)

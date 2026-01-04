@@ -29,8 +29,9 @@ const CONFIG = {
     // Render task management
     RENDER_TASK_TIMEOUT_MS: 10000,
     // Virtual scrolling - reduces DOM nodes for large documents
-    VIRTUAL_SCROLL_BUFFER_BEFORE: 3,  // Pages to render before current
-    VIRTUAL_SCROLL_BUFFER_AFTER: 5,   // Pages to render after current
+    VIRTUAL_SCROLL_BUFFER_BEFORE: 5,  // Pages to render before current
+    VIRTUAL_SCROLL_BUFFER_AFTER: 8,   // Pages to render after current
+    VIRTUAL_SCROLL_THRESHOLD: 30,     // Only use virtual scrolling for documents with more pages
 };
 
 export interface IPdfViewerProps {
@@ -120,6 +121,10 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
     const canvasContainerRef = useRef<HTMLDivElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
 
+    // Navigation synchronization refs - prevent race conditions between state updates and scroll
+    const isNavigatingRef = useRef(false);
+    const pendingScrollRef = useRef<number | null>(null);
+
     // Memoized computed values
     const columnsWithFiles = useMemo(() =>
         viewerConfig?.fileColumns.filter(c => c.hasFile) || [],
@@ -187,6 +192,36 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
     // Sync page input value when currentPage changes (from scroll, thumbnail click, etc.)
     useEffect(() => {
         setPageInputValue(currentPage.toString());
+    }, [currentPage]);
+
+    // Handle pending scroll after currentPage updates and virtual window re-renders
+    // This useEffect runs AFTER React re-renders with the new currentPage,
+    // ensuring the target page element exists in the DOM
+    useEffect(() => {
+        if (pendingScrollRef.current === null) return;
+
+        const targetPage = pendingScrollRef.current;
+
+        // Use requestAnimationFrame to ensure DOM has updated
+        requestAnimationFrame(() => {
+            const container = canvasContainerRef.current?.querySelector('.pdf-page-wrapper-container');
+            const pageElement = canvasContainerRef.current?.querySelector<HTMLElement>(`[data-page="${targetPage}"]`);
+
+            if (container && pageElement) {
+                // Use instant scroll for programmatic navigation (no smooth animation)
+                container.scrollTo({
+                    top: pageElement.offsetTop - 20,
+                    behavior: 'instant'
+                });
+            }
+
+            pendingScrollRef.current = null;
+
+            // Clear navigation flag after scroll settles
+            setTimeout(() => {
+                isNavigatingRef.current = false;
+            }, 100);
+        });
     }, [currentPage]);
 
     // Cleanup blob URLs to prevent memory leaks
@@ -489,25 +524,18 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
         }
     }, [applyZoom, calculateScale]);
 
-    // Navigation handlers - scroll within container, not browser window
+    // Navigation handlers - use pending scroll to wait for virtual window re-render
     const goToPage = useCallback((page: number) => {
         const targetPage = Math.max(1, Math.min(totalPages, page));
+
+        // Set navigation flag to prevent IntersectionObserver from overriding
+        isNavigatingRef.current = true;
+        pendingScrollRef.current = targetPage;
+
+        // Set state - this will trigger virtual window recalculation
         setCurrentPage(targetPage);
 
-        // Scroll within the PDF container, not the browser window
-        if (!canvasContainerRef.current) return;
-
-        const container = canvasContainerRef.current.querySelector('.pdf-page-wrapper-container');
-        const pageElement = canvasContainerRef.current.querySelector<HTMLElement>(`[data-page="${targetPage}"]`);
-
-        if (container && pageElement) {
-            const scrollTop = pageElement.offsetTop - 20; // 20px padding from top
-
-            container.scrollTo({
-                top: scrollTop,
-                behavior: 'smooth'
-            });
-        }
+        // Note: Actual scroll happens in useEffect after re-render ensures page is in DOM
     }, [totalPages]);
 
     const previousPage = useCallback(() => goToPage(currentPage - 1), [goToPage, currentPage]);
@@ -1226,6 +1254,7 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
                             searchText={searchText}
                             currentMatchIndex={currentMatchIndex}
                             searchMatches={searchMatches}
+                            isNavigatingRef={isNavigatingRef}
                         />
                     ) : (
                         <div className="pdf-image-viewer">
@@ -1551,6 +1580,7 @@ interface PdfCanvasProps {
     searchText: string;
     currentMatchIndex: number;
     searchMatches: { pageNum: number; itemIndex: number; startOffset: number; length: number }[];
+    isNavigatingRef: React.MutableRefObject<boolean>;
 }
 
 const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
@@ -1566,7 +1596,8 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
     setTextContent,
     searchText,
     currentMatchIndex,
-    searchMatches
+    searchMatches,
+    isNavigatingRef
 }) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -1582,6 +1613,8 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
     const visiblePagesRef = useRef<Map<number, number>>(new Map());
     // Debounce timer for current page updates
     const pageChangeDebounceRef = useRef<NodeJS.Timeout | null>(null);
+    // Track pages that have been successfully rendered at least once (prevents flicker)
+    const everRenderedRef = useRef<Set<number>>(new Set());
 
     // Render a single page - separated to avoid race conditions
     const renderPage = useCallback(async (pageNum: number, canvas: HTMLCanvasElement) => {
@@ -1624,7 +1657,9 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
             const text = await pdfService.getTextContent(pageNum);
             setTextContent(prev => new Map(prev).set(pageNum, text));
 
+            // Mark as done and track that this page has been rendered at least once
             setRenderedPages(prev => new Map(prev).set(pageNum, 'done'));
+            everRenderedRef.current.add(pageNum);
         } catch (e) {
             // Handle RenderingCancelledException - expected when cancelled
             if (e instanceof Error && e.message.includes('Rendering cancelled')) {
@@ -1668,6 +1703,11 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
         }
 
         pageChangeDebounceRef.current = setTimeout(() => {
+            // Skip page updates during programmatic navigation to prevent race conditions
+            if (isNavigatingRef.current) {
+                return;
+            }
+
             // Update current page based on most visible page
             let mostVisible = 1;
             let maxRatio = 0;
@@ -1682,7 +1722,7 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
                 onPageChange(mostVisible);
             }
         }, 50); // 50ms debounce
-    }, [renderedPages, renderPage, currentPage, onPageChange]);
+    }, [renderedPages, renderPage, currentPage, onPageChange, isNavigatingRef]);
 
     // Cancel all render tasks when scale/rotation changes or on unmount
     useEffect(() => {
@@ -1794,14 +1834,14 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
     }, [currentMatch]);
 
     // Virtual scrolling: calculate which pages to render
-    // For large documents (100+ pages), only render pages near the current view
+    // For large documents, only render pages near the current view
     const virtualWindow = useMemo(() => {
         const totalPages = pageViewports.length;
-        // For small documents, render all pages
-        if (totalPages <= 20) {
+        // For small/medium documents, render all pages (threshold: 30 pages)
+        if (totalPages <= CONFIG.VIRTUAL_SCROLL_THRESHOLD) {
             return { startPage: 1, endPage: totalPages, useVirtual: false };
         }
-        // For large documents, use virtual scrolling
+        // For large documents, use virtual scrolling with expanded buffer
         const startPage = Math.max(1, currentPage - CONFIG.VIRTUAL_SCROLL_BUFFER_BEFORE);
         const endPage = Math.min(totalPages, currentPage + CONFIG.VIRTUAL_SCROLL_BUFFER_AFTER);
         return { startPage, endPage, useVirtual: true };
@@ -1866,10 +1906,11 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
                         style={{ width, height }}
                     >
                         {/* Canvas must always exist for rendering, placeholder shows while loading */}
+                        {/* Keep canvas visible if it was ever rendered to prevent flicker during re-rendering */}
                         <canvas
                             className="pdf-page-canvas"
                             style={{
-                                display: renderedPages.get(pageNum) === 'done' ? 'block' : 'none'
+                                display: (renderedPages.get(pageNum) === 'done' || everRenderedRef.current.has(pageNum)) ? 'block' : 'none'
                             }}
                         />
 
@@ -1909,7 +1950,8 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
                             </div>
                         )}
 
-                        {renderedPages.get(pageNum) !== 'done' && (
+                        {/* Only show placeholder if page was never rendered */}
+                        {renderedPages.get(pageNum) !== 'done' && !everRenderedRef.current.has(pageNum) && (
                             <div className="pdf-page-placeholder" style={{ width, height }}>
                                 {renderedPages.get(pageNum) === 'rendering' && (
                                     <div className="pdf-page-loading">Loading...</div>
