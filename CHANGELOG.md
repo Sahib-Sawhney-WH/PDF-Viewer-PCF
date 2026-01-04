@@ -2,6 +2,15 @@
 
 All notable changes to the PDF Viewer PCF Control will be documented in this file.
 
+## [1.2.5] - 2026-01-04
+
+### Bug Fixes
+
+- **Fixed blank pages during rapid scrolling** - Pages no longer render blank when quickly scrolling long distances
+  - Root cause: `ctx.clearRect()` was called before async render started, causing blank canvas if page exited virtual window mid-render
+  - Fix: Only clear canvas for fresh renders (pages never rendered before), skip for re-renders
+  - PDF.js overwrites canvas content during render anyway, so clearing is only needed for initial placeholder removal
+
 ## [1.2.4] - 2026-01-04
 
 ### Bug Fixes (Navigation Synchronization)

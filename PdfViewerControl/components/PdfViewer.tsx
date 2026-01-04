@@ -1635,10 +1635,14 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
                 renderTasksRef.current.delete(pageNum);
             }
 
-            // Clear the canvas before rendering to prevent ghosting
-            const ctx = canvas.getContext('2d');
-            if (ctx) {
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
+            // Only clear canvas for fresh renders (pages never rendered before)
+            // Skip clearing for re-renders to prevent blank pages during rapid scrolling
+            // PDF.js will overwrite the canvas content anyway during render
+            if (!everRenderedRef.current.has(pageNum)) {
+                const ctx = canvas.getContext('2d');
+                if (ctx) {
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                }
             }
 
             // Start new render and store the task with start time
