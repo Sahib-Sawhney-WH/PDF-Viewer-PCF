@@ -1851,6 +1851,24 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
         return { startPage, endPage, useVirtual: true };
     }, [pageViewports.length, currentPage]);
 
+    // Clear rendered state for pages that exit the virtual window
+    // This ensures they re-render when they re-enter (canvas is recreated by React)
+    useEffect(() => {
+        if (!virtualWindow.useVirtual) return;
+
+        setRenderedPages(prev => {
+            let changed = false;
+            const next = new Map(prev);
+            prev.forEach((_, pageNum) => {
+                if (pageNum < virtualWindow.startPage || pageNum > virtualWindow.endPage) {
+                    next.delete(pageNum);
+                    changed = true;
+                }
+            });
+            return changed ? next : prev;
+        });
+    }, [virtualWindow.startPage, virtualWindow.endPage, virtualWindow.useVirtual]);
+
     // Calculate cumulative heights for spacers
     const pageHeights = useMemo(() => {
         return pageViewports.map((vp, index) => {
