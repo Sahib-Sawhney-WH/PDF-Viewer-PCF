@@ -3,35 +3,158 @@
  */
 
 import * as React from 'react';
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, Component, ReactNode } from 'react';
 import { PdfService, PdfMetadata, OutlineItem, TextContent, PageViewport, RenderTask } from '../services/PdfService';
 import { DataverseService, FileColumn, ViewerConfig } from '../services/DataverseService';
 
-// Configuration constants
+// Error Boundary to catch rendering errors and provide recovery UI
+interface ErrorBoundaryState {
+    hasError: boolean;
+    error: Error | null;
+}
+
+interface ErrorBoundaryProps {
+    children: ReactNode;
+    onReset?: () => void;
+}
+
+class PdfViewerErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+    constructor(props: ErrorBoundaryProps) {
+        super(props);
+        this.state = { hasError: false, error: null };
+    }
+
+    static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+        return { hasError: true, error };
+    }
+
+    componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
+        // Log error in development mode only
+        if (process.env.NODE_ENV === 'development') {
+            console.warn('PdfViewer Error Boundary caught an error:', error, errorInfo);
+        }
+    }
+
+    handleReset = (): void => {
+        this.setState({ hasError: false, error: null });
+        this.props.onReset?.();
+    };
+
+    render(): ReactNode {
+        if (this.state.hasError) {
+            return (
+                <div className="pdf-error-container">
+                    <div className="pdf-error-icon">⚠️</div>
+                    <div className="pdf-error-message">
+                        Something went wrong loading the viewer.
+                    </div>
+                    <button
+                        className="pdf-config-btn"
+                        style={{ maxWidth: 200, margin: '12px auto 0' }}
+                        onClick={this.handleReset}
+                    >
+                        Try Again
+                    </button>
+                </div>
+            );
+        }
+        return this.props.children;
+    }
+}
+
+// Convert technical errors to user-friendly messages
+const getUserFriendlyError = (error: Error | string): string => {
+    const msg = (typeof error === 'string' ? error : error.message).toLowerCase();
+
+    // Network/connectivity issues
+    if (msg.includes('network') || msg.includes('fetch') || msg.includes('failed to fetch')) {
+        return 'Unable to load document. Please check your network connection.';
+    }
+    if (msg.includes('timeout') || msg.includes('timed out')) {
+        return 'The request timed out. Please try again.';
+    }
+
+    // HTTP status codes
+    if (msg.includes('404') || msg.includes('not found')) {
+        return 'No file found. Please ensure a file has been uploaded.';
+    }
+    if (msg.includes('403') || msg.includes('forbidden') || msg.includes('unauthorized')) {
+        return 'Access denied. You may not have permission to view this file.';
+    }
+    if (msg.includes('400') || msg.includes('bad request')) {
+        return 'Invalid request. Please try selecting a different file.';
+    }
+    if (msg.includes('500') || msg.includes('server error')) {
+        return 'Server error. Please try again later.';
+    }
+
+    // PDF-specific errors
+    if (msg.includes('invalid pdf') || msg.includes('pdf loading failed')) {
+        return 'The file is not a valid PDF document.';
+    }
+    if (msg.includes('encrypted') || msg.includes('password')) {
+        return 'This PDF is password-protected and cannot be opened.';
+    }
+    if (msg.includes('corrupted') || msg.includes('damaged')) {
+        return 'The file appears to be corrupted or damaged.';
+    }
+
+    // File type issues
+    if (msg.includes('file is empty')) {
+        return 'The file appears to be empty.';
+    }
+
+    // Default message
+    return 'An error occurred while loading the document. Please try again.';
+};
+
+// URL validation for security (prevents javascript: and data: protocol attacks)
+const isValidUrl = (url: string): boolean => {
+    try {
+        const parsed = new URL(url);
+        return ['http:', 'https:'].includes(parsed.protocol);
+    } catch {
+        return false;
+    }
+};
+
+/**
+ * Configuration constants for the PDF Viewer
+ * These values control rendering behavior, performance, and UI responsiveness
+ */
 const CONFIG = {
-    DEFAULT_SCALE: 1.0,
-    MIN_SCALE: 0.25,
-    MAX_SCALE: 5.0,
-    ZOOM_STEP: 1.25,
-    RENDER_BUFFER_PX: 500,
-    THUMBNAIL_SCALE: 0.2,
-    SCROLL_THROTTLE_MS: 100,
+    // Zoom settings
+    DEFAULT_SCALE: 1.0,              // Initial zoom level (1.0 = 100%)
+    MIN_SCALE: 0.25,                 // Minimum zoom (25%)
+    MAX_SCALE: 5.0,                  // Maximum zoom (500%)
+    ZOOM_STEP: 1.25,                 // Multiplier for zoom in/out (25% steps)
+
+    // Rendering
+    RENDER_BUFFER_PX: 500,           // Pixels beyond viewport to pre-render pages
+    THUMBNAIL_SCALE: 0.2,            // Scale for thumbnail rendering (20% of full size)
+    SCROLL_THROTTLE_MS: 100,         // Throttle scroll event handlers
+
+    // Supported image file extensions
     IMAGE_EXTENSIONS: ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'tiff', 'tif'],
-    // Thumbnail rendering
-    THUMBNAIL_PREFETCH_BEFORE: 3,
-    THUMBNAIL_PREFETCH_AFTER: 10,
-    THUMBNAIL_MAX_PAGES: 30,
-    THUMBNAIL_BATCH_DELAY_MS: 50,
-    THUMBNAIL_INITIAL_DELAY_MS: 300,
-    THUMBNAIL_DEFERRED_DELAY_MS: 500,
-    // UI delays
-    FOCUS_DELAY_MS: 100,
+
+    // Thumbnail rendering priorities
+    THUMBNAIL_PREFETCH_BEFORE: 3,    // Thumbnails to prefetch before current page
+    THUMBNAIL_PREFETCH_AFTER: 10,    // Thumbnails to prefetch after (users scroll down more)
+    THUMBNAIL_MAX_PAGES: 30,         // Max thumbnails to render in first pass
+    THUMBNAIL_BATCH_DELAY_MS: 50,    // Delay between thumbnail batches (prevents jank)
+    THUMBNAIL_INITIAL_DELAY_MS: 300, // Wait before starting thumbnail rendering
+    THUMBNAIL_DEFERRED_DELAY_MS: 500,// Delay before rendering remaining thumbnails
+
+    // UI responsiveness
+    FOCUS_DELAY_MS: 100,             // Delay before auto-focusing inputs
+
     // Render task management
-    RENDER_TASK_TIMEOUT_MS: 10000,
+    RENDER_TASK_TIMEOUT_MS: 10000,   // Cancel stuck render tasks after 10s
+
     // Virtual scrolling - reduces DOM nodes for large documents
-    VIRTUAL_SCROLL_BUFFER_BEFORE: 5,  // Pages to render before current
-    VIRTUAL_SCROLL_BUFFER_AFTER: 8,   // Pages to render after current
-    VIRTUAL_SCROLL_THRESHOLD: 30,     // Only use virtual scrolling for documents with more pages
+    VIRTUAL_SCROLL_BUFFER_BEFORE: 5, // Pages to render before current view
+    VIRTUAL_SCROLL_BUFFER_AFTER: 8,  // Pages to render after current view
+    VIRTUAL_SCROLL_THRESHOLD: 30,    // Documents with more pages use virtual scrolling
 };
 
 export interface IPdfViewerProps {
@@ -96,7 +219,7 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
     const [currentMatchIndex, setCurrentMatchIndex] = useState(-1);
     const [showFindPanel, setShowFindPanel] = useState(false);
     const searchInputRef = useRef<HTMLInputElement>(null);
-    const searchDebounceRef = useRef<NodeJS.Timeout | null>(null);
+    const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // Page input state (separate from currentPage to prevent glitches while typing)
     const [pageInputValue, setPageInputValue] = useState('');
@@ -338,14 +461,8 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
         } catch (error) {
             // Only show error if this is still the current load
             if (loadIdRef.current !== thisLoadId) return;
-            const errMsg = error instanceof Error ? error.message : 'Unknown error';
-            if (errMsg.includes('400') || errMsg.includes('404') || errMsg.includes('not found')) {
-                setErrorMessage('No file found in this column. Please ensure a file has been uploaded.');
-            } else if (errMsg.includes('Invalid PDF')) {
-                setErrorMessage('The file is not a valid PDF. Please check the file format.');
-            } else {
-                setErrorMessage(`Failed to load document: ${errMsg}`);
-            }
+            const errMsg = error instanceof Error ? error : String(error);
+            setErrorMessage(getUserFriendlyError(errMsg));
             setViewerState('error');
         }
     }, [onColumnChange]);
@@ -385,8 +502,9 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
             setOutline(docOutline);
 
             setViewerState('viewing');
-        } catch {
-            setErrorMessage('Failed to load PDF. Check the URL and try again.');
+        } catch (error) {
+            const errMsg = error instanceof Error ? error : String(error);
+            setErrorMessage(getUserFriendlyError(errMsg));
             setViewerState('error');
         }
     };
@@ -458,8 +576,8 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
                 setViewerState('viewing');
             }
         } catch (error) {
-            const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-            setErrorMessage(`Failed to load file: ${errorMsg}`);
+            const errMsg = error instanceof Error ? error : String(error);
+            setErrorMessage(getUserFriendlyError(errMsg));
             setViewerState('error');
         }
     };
@@ -921,7 +1039,14 @@ export const PdfViewer: React.FC<IPdfViewerProps> = ({
                                 />
                                 <button
                                     className="pdf-config-btn"
-                                    onClick={() => loadFromUrl(testUrl)}
+                                    onClick={() => {
+                                        if (isValidUrl(testUrl)) {
+                                            loadFromUrl(testUrl);
+                                        } else {
+                                            setErrorMessage('Invalid URL. Must be a valid http:// or https:// URL.');
+                                            setViewerState('error');
+                                        }
+                                    }}
                                     disabled={!testUrl}
                                 >
                                     Load from URL
@@ -1344,6 +1469,9 @@ interface ThumbnailPanelProps {
     onPageClick: (page: number) => void;
 }
 
+// Maximum number of thumbnails to cache (prevents memory bloat)
+const THUMBNAIL_CACHE_MAX_SIZE = 50;
+
 const ThumbnailPanel: React.FC<ThumbnailPanelProps> = React.memo(({ pdfService, totalPages, currentPage, onPageClick }) => {
     const [thumbnails, setThumbnails] = useState<Map<number, string>>(new Map());
     const thumbnailTasksRef = useRef<Map<number, RenderTask>>(new Map());
@@ -1351,6 +1479,8 @@ const ThumbnailPanel: React.FC<ThumbnailPanelProps> = React.memo(({ pdfService, 
     const idleCallbackRef = useRef<number | null>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const [visibleRange, setVisibleRange] = useState({ start: 1, end: 20 });
+    // Track insertion order for LRU eviction
+    const thumbnailOrderRef = useRef<number[]>([]);
 
     // Helper to schedule work during idle time (with fallback for older browsers)
     const scheduleIdleWork = useCallback((callback: () => void): number => {
@@ -1419,7 +1549,29 @@ const ThumbnailPanel: React.FC<ThumbnailPanelProps> = React.memo(({ pdfService, 
                 await renderTask.promise;
                 thumbnailTasksRef.current.delete(pageNum);
                 if (mountedRef.current) {
-                    setThumbnails(prev => new Map(prev).set(pageNum, canvas.toDataURL()));
+                    const dataUrl = canvas.toDataURL();
+                    setThumbnails(prev => {
+                        const next = new Map(prev);
+                        // LRU eviction: remove oldest thumbnails if cache is full
+                        if (next.size >= THUMBNAIL_CACHE_MAX_SIZE && !next.has(pageNum)) {
+                            // Remove oldest entries until we have room
+                            while (thumbnailOrderRef.current.length > 0 && next.size >= THUMBNAIL_CACHE_MAX_SIZE) {
+                                const oldest = thumbnailOrderRef.current.shift();
+                                if (oldest !== undefined && next.has(oldest)) {
+                                    // Note: Data URLs don't need revoking (only blob: URLs do)
+                                    next.delete(oldest);
+                                }
+                            }
+                        }
+                        next.set(pageNum, dataUrl);
+                        // Track insertion order (move to end if already exists)
+                        const existingIndex = thumbnailOrderRef.current.indexOf(pageNum);
+                        if (existingIndex !== -1) {
+                            thumbnailOrderRef.current.splice(existingIndex, 1);
+                        }
+                        thumbnailOrderRef.current.push(pageNum);
+                        return next;
+                    });
                 }
                 return true;
             } catch {
@@ -1482,6 +1634,8 @@ const ThumbnailPanel: React.FC<ThumbnailPanelProps> = React.memo(({ pdfService, 
                 }
                 thumbnailTasksRef.current.forEach((task) => task.cancel());
                 thumbnailTasksRef.current.clear();
+                // Clear thumbnail order tracking on cleanup
+                thumbnailOrderRef.current = [];
             };
         }
 
@@ -1492,6 +1646,8 @@ const ThumbnailPanel: React.FC<ThumbnailPanelProps> = React.memo(({ pdfService, 
             }
             thumbnailTasksRef.current.forEach((task) => task.cancel());
             thumbnailTasksRef.current.clear();
+            // Clear thumbnail order tracking on cleanup
+            thumbnailOrderRef.current = [];
         };
     }, [pdfService, totalPages, currentPage, scheduleIdleWork, cancelIdleWork]);
 
@@ -1612,7 +1768,7 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
     // Track visible pages and their intersection ratios for current page detection
     const visiblePagesRef = useRef<Map<number, number>>(new Map());
     // Debounce timer for current page updates
-    const pageChangeDebounceRef = useRef<NodeJS.Timeout | null>(null);
+    const pageChangeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     // Track pages that have been successfully rendered at least once (prevents flicker)
     const everRenderedRef = useRef<Set<number>>(new Set());
 
@@ -1992,4 +2148,18 @@ const PdfCanvas: React.FC<PdfCanvasProps> = React.memo(({
     );
 });
 
-export default PdfViewer;
+// Assign display names to memoized components for debugging
+ThumbnailPanel.displayName = 'ThumbnailPanel';
+OutlinePanel.displayName = 'OutlinePanel';
+PdfCanvas.displayName = 'PdfCanvas';
+
+// Wrap PdfViewer with ErrorBoundary for crash recovery
+const PdfViewerWithErrorBoundary: React.FC<IPdfViewerProps> = (props) => (
+    <PdfViewerErrorBoundary>
+        <PdfViewer {...props} />
+    </PdfViewerErrorBoundary>
+);
+
+PdfViewerWithErrorBoundary.displayName = 'PdfViewerWithErrorBoundary';
+
+export default PdfViewerWithErrorBoundary;

@@ -50,16 +50,30 @@ A feature-rich PDF and image viewer control for Power Apps Model-Driven Apps. Vi
    - **Default Zoom**: Set initial zoom (auto, page-fit, page-width, or percentage)
    - **Theme**: light, dark, or auto
 
-## Configuration Properties
+## Configuration
 
-| Property | Type | Default | Description |
-|----------|------|---------|-------------|
-| `defaultFileColumn` | Text | - | Logical name of the file column to display by default |
-| `showToolbar` | Boolean | true | Show/hide the toolbar |
-| `showSidebar` | Boolean | true | Show/hide the sidebar |
-| `defaultZoom` | Text | auto | Initial zoom: `auto`, `page-fit`, `page-width`, or percentage |
-| `theme` | Text | light | Theme: `light`, `dark`, or `auto` |
-| `rows` | Number | 10 | Number of rows to display (controls height) |
+### Required Binding
+
+This control **must be bound to a Multiline Text column** (Multiple Lines of Text).
+The control uses this binding to:
+- Detect the current record context (entity name and record ID)
+- Auto-discover File and Image columns on the entity
+
+> **Important:** The bound field is not used to store PDF content - it's only
+> used for form context detection. You can bind to any existing multiline text
+> field on your entity, or create a hidden one specifically for this control.
+
+### Properties
+
+| Property | Type | Required | Default | Description |
+|----------|------|----------|---------|-------------|
+| `boundField` | Multiple (Multiline Text) | **Yes** | - | Must bind to a multiline text column for context detection |
+| `defaultFileColumn` | Text | No | - | Logical name of the file column to display by default |
+| `showToolbar` | Boolean | No | true | Show/hide the toolbar |
+| `showSidebar` | Boolean | No | true | Show/hide the sidebar |
+| `defaultZoom` | Text | No | auto | Initial zoom: `auto`, `page-fit`, `page-width`, or percentage |
+| `theme` | Text | No | light | Theme: `light`, `dark`, or `auto` |
+| `rows` | Number | No | 10 | Number of rows to display (controls height) |
 
 ## Output Properties
 

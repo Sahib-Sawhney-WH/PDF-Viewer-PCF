@@ -198,7 +198,8 @@ export class DataverseService {
                     headers: {
                         'Accept': 'application/json',
                         'OData-MaxVersion': '4.0',
-                        'OData-Version': '4.0'
+                        'OData-Version': '4.0',
+                        'X-Requested-With': 'XMLHttpRequest'
                     },
                     signal: this.getSignal()
                 }
@@ -208,8 +209,11 @@ export class DataverseService {
                 const data = await response.json();
                 return data.EntitySetName;
             }
-        } catch {
-            // Fall back to guessing
+        } catch (error) {
+            // Fall back to guessing - log in development for debugging
+            if (process.env.NODE_ENV === 'development') {
+                console.warn('Failed to fetch entity set name, using fallback:', error);
+            }
         }
 
         // Fallback: guess the plural form
@@ -234,7 +238,8 @@ export class DataverseService {
         const headers = {
             'Accept': 'application/json',
             'OData-MaxVersion': '4.0',
-            'OData-Version': '4.0'
+            'OData-Version': '4.0',
+            'X-Requested-With': 'XMLHttpRequest'
         };
 
         try {
@@ -276,8 +281,11 @@ export class DataverseService {
                     });
                 }
             }
-        } catch {
-            // Error discovering columns - silently fail
+        } catch (error) {
+            // Error discovering columns - log in development for debugging
+            if (process.env.NODE_ENV === 'development') {
+                console.warn('Failed to discover file columns:', error);
+            }
         }
 
         return this.config.fileColumns;
@@ -297,7 +305,8 @@ export class DataverseService {
                     headers: {
                         'Accept': 'application/json',
                         'OData-MaxVersion': '4.0',
-                        'OData-Version': '4.0'
+                        'OData-Version': '4.0',
+                        'X-Requested-With': 'XMLHttpRequest'
                     },
                     signal: this.getSignal()
                 }
@@ -309,8 +318,11 @@ export class DataverseService {
                     col.hasFile = !!record[col.logicalName];
                 }
             }
-        } catch {
-            // Error checking files
+        } catch (error) {
+            // Error checking files - log in development for debugging
+            if (process.env.NODE_ENV === 'development') {
+                console.warn('Failed to check which columns have files:', error);
+            }
         }
     }
 
@@ -350,7 +362,8 @@ export class DataverseService {
 
         const response = await fetch(url, {
             headers: {
-                'Accept': '*/*'
+                'Accept': '*/*',
+                'X-Requested-With': 'XMLHttpRequest'
             },
             signal: this.getSignal()
         });

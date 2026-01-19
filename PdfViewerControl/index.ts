@@ -5,12 +5,13 @@
 
 import { IInputs, IOutputs } from "./generated/ManifestTypes";
 import * as React from "react";
-import * as ReactDOM from "react-dom";
+import { createRoot, Root } from "react-dom/client";
 import { PdfViewer } from "./components/PdfViewer";
 
 export class PdfViewerControl implements ComponentFramework.StandardControl<IInputs, IOutputs> {
     private _container: HTMLDivElement;
     private _notifyOutputChanged: () => void;
+    private _root: Root | null = null;
 
     // Output values
     private _currentPage = 1;
@@ -35,6 +36,9 @@ export class PdfViewerControl implements ComponentFramework.StandardControl<IInp
 
         // Register for container resize events
         context.mode.trackContainerResize(true);
+
+        // Create React 18 root
+        this._root = createRoot(container);
 
         // Render the React component
         this.renderComponent(context);
@@ -71,8 +75,8 @@ export class PdfViewerControl implements ComponentFramework.StandardControl<IInp
         const height = rows * 54 + 50;
         const width = allocatedWidth > 0 ? allocatedWidth : undefined;
 
-        // Render the component using React 16 API
-        ReactDOM.render(
+        // Render the component using React 18 API
+        this._root?.render(
             React.createElement(PdfViewer, {
                 defaultFileColumn,
                 showToolbar,
@@ -94,8 +98,7 @@ export class PdfViewerControl implements ComponentFramework.StandardControl<IInp
                         this._notifyOutputChanged();
                     }
                 }
-            }),
-            this._container
+            })
         );
     }
 
@@ -114,6 +117,7 @@ export class PdfViewerControl implements ComponentFramework.StandardControl<IInp
      * Called when the control is to be removed from the DOM tree.
      */
     public destroy(): void {
-        ReactDOM.unmountComponentAtNode(this._container);
+        this._root?.unmount();
+        this._root = null;
     }
 }
