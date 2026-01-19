@@ -13,6 +13,12 @@ node_modules/
 bin/
 obj/
 
+# Exception: Track solution zip files for easy distribution
+!Solutions/*/bin/
+!Solutions/*/bin/Release/
+!Solutions/*/bin/Debug/
+!Solutions/*/bin/**/*.zip
+
 # MSBuild Binary and Structured Log
 *.binlog
 
